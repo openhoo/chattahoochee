@@ -1,0 +1,13 @@
+{
+  "name": "@openhoo/teamwire-sdk",
+  "version": "0.1.0",
+  "description": "An independently authored experimental Teamwire human-account client for TypeScript.",
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    ".": { "types": "./src/index.ts", "import": "./src/index.ts" }
+  },
+  "files": ["src", "README.md"],
+  "engines": { "node": ">=20.19.0" },
+  "dependencies": { "@noble/curves": "2.4.0" }
+}

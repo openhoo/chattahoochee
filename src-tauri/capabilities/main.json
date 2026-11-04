@@ -1,0 +1,13 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main-account-transport",
+  "description": "Account transport commands for the local main window only.",
+  "local": true,
+  "windows": ["main"],
+  "permissions": [
+    "allow-configure-account-transport",
+    "allow-account-http",
+    "allow-cancel-account-http",
+    "allow-remove-account-transport"
+  ]
+}

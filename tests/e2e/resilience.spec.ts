@@ -2,13 +2,38 @@ import { test, expect, demo, composer, list, details, transcript } from './fixtu
 
 test('minimum layout keeps controls reachable with details open and closed', async ({ page }) => {
   await demo(page);
-  await details(page);
-  await expect(page.getByRole('button', { name: 'Close conversation details', exact: true })).toBeVisible();
-  await page.getByRole('button', { name: 'Close conversation details', exact: true }).click();
+  const panel = await details(page);
+  const viewport = page.viewportSize()!;
+  if (viewport.width <= 1099) {
+    const drawer = page.getByRole('dialog', { name: 'Conversation information', exact: true });
+    await expect(drawer).toBeVisible();
+    await expect.poll(async () => {
+      const bounds = await drawer.boundingBox();
+      return bounds && {
+        top: Math.round(bounds.y),
+        right: Math.round(bounds.x + bounds.width),
+        height: Math.round(bounds.height),
+      };
+    }, 'The details drawer must align with the top and right of the viewport at full height').toEqual({
+      top: 0,
+      right: viewport.width,
+      height: viewport.height,
+    });
+  }
+  for (const name of ['Close conversation details', 'Pinned conversation']) {
+    const control = panel.getByRole('button', { name, exact: true });
+    await expect(control).toBeVisible();
+    const bounds = await control.boundingBox();
+    expect(bounds, `${name} must have measurable bounds`).not.toBeNull();
+    expect(bounds!.x, `${name} left edge`).toBeGreaterThanOrEqual(0);
+    expect(bounds!.y, `${name} top edge`).toBeGreaterThanOrEqual(0);
+    expect(bounds!.x + bounds!.width, `${name} right edge`).toBeLessThanOrEqual(viewport.width);
+    expect(bounds!.y + bounds!.height, `${name} bottom edge`).toBeLessThanOrEqual(viewport.height);
+  }
+  await panel.getByRole('button', { name: 'Close conversation details', exact: true }).click();
   await composer(page).fill('Layout check');
   const bounds = await page.getByRole('button', { name: 'Send demo message', exact: true }).boundingBox();
   expect(bounds).not.toBeNull();
-  const viewport = page.viewportSize()!;
   expect(bounds!.x).toBeGreaterThanOrEqual(0);
   expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(viewport.width);
   expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(viewport.height);

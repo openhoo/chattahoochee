@@ -15,6 +15,8 @@
     "preview": "vite preview --host 127.0.0.1 --port 1421 --strictPort",
     "typecheck": "tsc --noEmit",
     "test": "node --import tsx --test tests/*.test.ts packages/teamwire-sdk/test/*.test.ts",
+    "test:coverage": "node scripts/coverage.mjs",
+    "test:e2e": "playwright test",
     "check": "npm run typecheck && npm test && npm run build",
     "tauri": "tauri",
     "desktop": "tauri dev",

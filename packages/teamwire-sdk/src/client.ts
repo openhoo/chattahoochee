@@ -40,6 +40,7 @@ export class TeamwireClient {
   }
 
   async loginPassword(credentials: TeamwirePasswordLogin, options: TeamwireRequestOptions = {}): Promise<TeamwireSession> {
+    options.signal?.throwIfAborted();
     const email = credentials.email.trim().toLowerCase();
     if (!email || !email.includes('@') || !credentials.password) {
       throw new UnsupportedAuthError('An email address and password are required for password login.');
@@ -72,7 +73,7 @@ export class TeamwireClient {
       });
       const user = record(authenticated.data, 'login response');
       const from = identifier(field(user, 'from_id', 'fromId'), 'session identity');
-      const userId = identifier(field(user, 'owner_id', 'ownerId') ?? from, 'user identity');
+      const userId = identifier(field(user, 'owner_id', 'ownerId'), 'user identity');
       return new TeamwireSession(this.#transport, key, from, userId);
     } catch (error) {
       if (error instanceof TeamwireProtocolError) throw new UnsupportedAuthError();
@@ -86,7 +87,7 @@ export class TeamwireClient {
   }
 }
 
-interface CachedConversation { conversation: TeamwireConversation; key?: CryptoKey; version: number }
+interface CachedConversation { canSend: boolean; key?: CryptoKey; version: number }
 
 /** Session keys remain in memory and are never included in normalized records. */
 export class TeamwireSession {
@@ -98,6 +99,8 @@ export class TeamwireSession {
   #closed = false;
   #conversations = new Map<string, CachedConversation>();
   #contacts = new Map<string, TeamwireContact>();
+  #unsubscribed = new Set<string>();
+  #lifetime = new AbortController();
 
   /** Sessions are normally created by TeamwireClient.loginPassword(). */
   constructor(transport: TeamwireTransport, key: CryptoKey, from: string, userId: string) {
@@ -117,14 +120,18 @@ export class TeamwireSession {
     method?: string; payload?: unknown; headers?: Record<string, string>; signal?: AbortSignal; raw?: boolean;
   } = {}): Promise<{ data: unknown; response: Response }> {
     const key = this.#activeKey();
-    const body = options.payload === undefined ? undefined : await this.#transport.crypto.encrypt(JSON.stringify(options.payload), key);
-    this.#activeKey();
-    const result = await this.#transport.request(path, {
-      method: options.method, body, headers: options.headers, from: this.#from,
-      key, signal: options.signal, raw: options.raw,
-    });
-    this.#activeKey();
-    return result;
+    const cancellation = combineSignals(this.#lifetime.signal, options.signal);
+    try {
+      cancellation.signal.throwIfAborted();
+      const body = options.payload === undefined ? undefined : await this.#transport.crypto.encrypt(JSON.stringify(options.payload), key);
+      this.#activeKey();
+      const result = await this.#transport.request(path, {
+        method: options.method, body, headers: options.headers, from: this.#from,
+        key, signal: cancellation.signal, raw: options.raw,
+      });
+      this.#activeKey();
+      return result;
+    } finally { cancellation.dispose(); }
   }
 
   async getContacts(options: TeamwireRequestOptions = {}): Promise<TeamwireContact[]> {
@@ -137,7 +144,7 @@ export class TeamwireSession {
       const profile = user.profile && typeof user.profile === 'object' && !Array.isArray(user.profile)
         ? user.profile as TeamwireRecord : {};
       const email = optionalString(user.email) ?? optionalString(profile.email);
-      return { id, firstName, lastName, displayName: [firstName, lastName].filter(Boolean).join(' ') || email || id, email, raw: user };
+      return { id, firstName, lastName, displayName: [firstName, lastName].filter(Boolean).join(' ') || email || id, email, raw: publicRecord(user) };
     });
     this.#contacts = new Map(contacts.map(contact => [contact.id, contact]));
     return contacts;
@@ -151,12 +158,13 @@ export class TeamwireSession {
       unreadChatIds: identifiers(field(raw, 'unread_chats', 'unreadChats')),
       mutedChatIds: identifiers(field(raw, 'muted_chats', 'mutedChats')),
       archivedChatIds: identifiers(field(raw, 'archived_chats', 'archivedChats')),
-      raw,
+      raw: publicRecord(raw),
     };
   }
 
   async #cacheConversations(values: unknown[]): Promise<TeamwireConversation[]> {
     const normalized: TeamwireConversation[] = [];
+    const updates: Array<[string, CachedConversation]> = [];
     for (const value of values) {
       this.#activeKey();
       const raw = record(value, 'subscription');
@@ -166,7 +174,7 @@ export class TeamwireSession {
       const versionValue = field(raw, 'chat_v', 'chatV');
       const version = typeof versionValue === 'number' ? versionValue : versionValue === undefined ? 0 : Number.NaN;
       const secret = optionalString(raw.col);
-      const supportedVersion = Number.isFinite(version) && version <= 0;
+      const supportedVersion = Number.isFinite(version) && version <= 0 && !this.#unsubscribed.has(id);
       const key = secret && supportedVersion ? await this.#transport.crypto.importSecret(secret) : undefined;
       const participantIds = identifiers(members.users);
       const type = info.type === '1to1' || info.type === 'group' ? info.type : 'unknown';
@@ -192,9 +200,11 @@ export class TeamwireSession {
         raw: publicRecord(raw),
       };
       this.#activeKey();
-      this.#conversations.set(id, { conversation, key, version });
+      updates.push([id, { canSend: conversation.canSend, key, version }]);
       normalized.push(conversation);
     }
+    this.#activeKey();
+    for (const [id, cached] of updates) this.#conversations.set(id, cached);
     return normalized;
   }
 
@@ -207,7 +217,7 @@ export class TeamwireSession {
   }
 
   async #loadMissingConversations(ids: string[], options: TeamwireRequestOptions): Promise<void> {
-    const missing = [...new Set(ids)].filter(id => !this.#conversations.has(id));
+    const missing = [...new Set(ids)].filter(id => !this.#conversations.has(id) && !this.#unsubscribed.has(id));
     if (!missing.length) return;
     const { data } = await this.#request('/u/subscriptions/matching_ids?legacy_circle_ids=true', {
       method: 'POST', payload: { thread_ids: missing }, signal: options.signal,
@@ -251,15 +261,24 @@ export class TeamwireSession {
     const { data, response } = await this.#request(`/t/${encodeURIComponent(id)}/`, {
       headers: { ETag: encodeCursor(options.since ?? initialCursor(options.days)) }, signal: options.signal,
     });
-    return response.status === 304 ? [] : this.#messages(array(data, 'history'), options);
+    if (response.status === 304) return [];
+    const rows = array(data, 'history');
+    for (const value of rows) {
+      const row = record(value, 'history message');
+      if (row.tid !== undefined && identifier(row.tid, 'history conversation') !== id) {
+        throw new TeamwireProtocolError('The history response refers to a different conversation.');
+      }
+    }
+    return this.#messages(rows, options);
   }
 
   async sendText(threadId: string, text: string, options: TeamwireSendOptions = {}): Promise<TeamwireSendReceipt> {
     if (typeof text !== 'string' || !text.trim()) throw new TeamwireProtocolError('A nonempty text message is required.');
     const id = identifier(threadId, 'conversation');
+    if (this.#unsubscribed.has(id)) throw new TeamwireUnsupportedConversationError();
     await this.#loadMissingConversations([id], options);
     const cached = this.#conversations.get(id);
-    if (!cached?.key || !cached.conversation.canSend) throw new TeamwireUnsupportedConversationError();
+    if (!cached?.key || !cached.canSend) throw new TeamwireUnsupportedConversationError();
     const clientMessageId = options.clientMessageId ? identifier(options.clientMessageId, 'client message') : this.#transport.crypto.requestId();
     const message = await this.#transport.crypto.encrypt(text, cached.key);
     const { data } = await this.#request('/t', {
@@ -276,7 +295,7 @@ export class TeamwireSession {
     if (receiptThread !== id) throw new TeamwireProtocolError('The message receipt refers to a different conversation.');
     return {
       id: identifier(raw.mid, 'receipt message'), threadId: receiptThread,
-      timestamp: requiredTimestamp(raw.ts), clientMessageId, delivery: 'accepted', raw,
+      timestamp: requiredTimestamp(raw.ts), clientMessageId, delivery: 'accepted', raw: publicRecord(raw),
     };
   }
 
@@ -301,7 +320,10 @@ export class TeamwireSession {
         await this.#cacheConversations([event]);
       }
       if (event.type === 'chats.leave' && Array.isArray(event.chats)) {
-        for (const id of identifiers(event.chats)) this.#conversations.delete(id);
+        for (const id of identifiers(event.chats)) { this.#unsubscribed.add(id); this.#conversations.delete(id); }
+      }
+      if (event.type === 'chats.join' && Array.isArray(event.chats)) {
+        for (const id of identifiers(event.chats)) { this.#unsubscribed.delete(id); this.#conversations.delete(id); }
       }
     }
     const messages = await this.#messages(rows, options);
@@ -316,6 +338,7 @@ export class TeamwireSession {
   /** timestamp is the time of reading, rather than the message creation time. */
   async markRead(threadId: string, message: { messageId: string; timestamp?: string }, options: TeamwireRequestOptions = {}): Promise<void> {
     const timestamp = requiredTimestamp(message.timestamp ?? new Date().toISOString());
+    if (this.#unsubscribed.has(identifier(threadId))) throw new TeamwireUnsupportedConversationError();
     await this.#request(`/t/${encodeURIComponent(identifier(threadId))}/readers`, {
       method: 'POST', payload: { mid: identifier(message.messageId), mts: Date.parse(timestamp) }, signal: options.signal,
     });
@@ -326,21 +349,29 @@ export class TeamwireSession {
     const intervalMs = options.intervalMs ?? 15_000;
     if (!Number.isFinite(intervalMs) || intervalMs < 500) throw new TeamwireProtocolError('Feed polling interval must be at least 500 ms.');
     let since = options.since;
-    while (!this.#closed && !options.signal?.aborted) {
-      const feed = await this.getFeed({ since, signal: options.signal });
-      since = feed.cursor;
-      yield feed;
-      await pause(intervalMs, options.signal);
-    }
+    const cancellation = combineSignals(this.#lifetime.signal, options.signal);
+    try {
+      while (!this.#closed && !options.signal?.aborted) {
+        const feed = await this.getFeed({ since, signal: cancellation.signal });
+        since = feed.cursor;
+        yield feed;
+        if (this.#closed) break;
+        await pause(intervalMs, cancellation.signal);
+      }
+    } catch (error) {
+      if (!this.#closed || options.signal?.aborted) throw error;
+    } finally { cancellation.dispose(); }
   }
 
   /** Drop local session keys without contacting the server. */
   close(): void {
     this.#closed = true;
+    this.#lifetime.abort(new TeamwireSessionClosedError());
     this.#key = undefined;
     this.#from = '';
     this.#conversations.clear();
     this.#contacts.clear();
+    this.#unsubscribed.clear();
   }
 
   /** Local keys are cleared even when the server cannot confirm logout. */
@@ -366,4 +397,17 @@ function pause(milliseconds: number, signal?: AbortSignal): Promise<void> {
     const timer = setTimeout(() => { signal?.removeEventListener('abort', aborted); resolve(); }, milliseconds);
     signal?.addEventListener('abort', aborted, { once: true });
   });
+}
+
+function combineSignals(...signals: Array<AbortSignal | undefined>): { signal: AbortSignal; dispose(): void } {
+  const controller = new AbortController();
+  const listeners: Array<{ signal: AbortSignal; abort: () => void }> = [];
+  for (const signal of signals) {
+    if (!signal) continue;
+    if (signal.aborted) { controller.abort(signal.reason); break; }
+    const abort = () => controller.abort(signal.reason);
+    signal.addEventListener('abort', abort, { once: true });
+    listeners.push({ signal, abort });
+  }
+  return { signal: controller.signal, dispose: () => { for (const { signal, abort } of listeners) signal.removeEventListener('abort', abort); } };
 }

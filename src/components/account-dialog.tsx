@@ -9,10 +9,11 @@ import { ConnectionDot, IconButton, ProviderIcon, providerName } from './chat-pa
 interface AccountDialogProps extends Pick<AppShellProps, 'state' | 'onConnectAccount' | 'onDisconnectAccount' | 'onChangeTheme' | 'onEnterDemo' | 'onExitDemo'> {
   open: boolean;
   onOpenChange(open: boolean): void;
+  onCloseAutoFocus?(event: Event): void;
   initialSection?: 'accounts' | 'appearance';
 }
 
-export function AccountDialog({ state, open, onOpenChange, initialSection = 'accounts', onConnectAccount, onDisconnectAccount, onChangeTheme, onEnterDemo, onExitDemo }: AccountDialogProps) {
+export function AccountDialog({ state, open, onOpenChange, onCloseAutoFocus, initialSection = 'accounts', onConnectAccount, onDisconnectAccount, onChangeTheme, onEnterDemo, onExitDemo }: AccountDialogProps) {
   const [section, setSection] = useState(initialSection);
   const [adding, setAdding] = useState(false);
   const [provider, setProvider] = useState<Provider>('skype');
@@ -25,21 +26,32 @@ export function AccountDialog({ state, open, onOpenChange, initialSection = 'acc
   const [disconnecting, setDisconnecting] = useState<string | null>(null);
   const [error, setError] = useState('');
 
+  function resetForm() {
+    setAddress(''); setLoginUsername(''); setPassword(''); setServer(''); setShowPassword(false); setError('');
+  }
+
+  function cancelSetup() { resetForm(); setAdding(false); }
+
+  function chooseProvider(next: Provider) {
+    if (next === provider) return;
+    resetForm(); setProvider(next);
+  }
+
   useEffect(() => { if (open) { setSection(initialSection); setError(''); } }, [open, initialSection]);
   useEffect(() => {
-    if (!open) { setPassword(''); setShowPassword(false); setAdding(false); setError(''); }
+    if (!open) cancelSetup();
   }, [open]);
 
   async function connect(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (pending) return;
     setPending(true); setError('');
-    const input: AccountInput = { provider, address: address.trim(), password, ...(loginUsername.trim() ? { loginUsername: loginUsername.trim() } : {}), ...(server.trim() ? { server: server.trim() } : {}) };
+    const input: AccountInput = { provider, address: address.trim(), password, ...(provider === 'skype' && loginUsername.trim() ? { loginUsername: loginUsername.trim() } : {}), ...(server.trim() ? { server: server.trim() } : {}) };
     try {
       await onConnectAccount(input);
-      setAdding(false); setAddress(''); setLoginUsername(''); setServer('');
+      cancelSetup();
     } catch (failure) { setError(failure instanceof Error ? failure.message : 'Unable to connect this account.'); }
-    finally { setPassword(''); setPending(false); }
+    finally { setPassword(''); setShowPassword(false); setPending(false); }
   }
 
   async function disconnect(id: string) {
@@ -52,7 +64,7 @@ export function AccountDialog({ state, open, onOpenChange, initialSection = 'acc
   const themes: { id: Theme; label: string; Icon: typeof Sun }[] = [{ id: 'light', label: 'Light', Icon: Sun }, { id: 'dark', label: 'Dark', Icon: Moon }, { id: 'system', label: 'System', Icon: Laptop }];
 
   return <Dialog open={open} onOpenChange={onOpenChange}>
-    <DialogContent className="settings-dialog" showCloseButton={false}>
+    <DialogContent className="settings-dialog" showCloseButton={false} onCloseAutoFocus={onCloseAutoFocus}>
       <DialogHeader className="settings-titlebar"><div><span className="eyebrow">MAKE YOURSELF AT HOME</span><DialogTitle>Workspace settings</DialogTitle></div><IconButton label="Close settings" onClick={() => onOpenChange(false)}><X /></IconButton></DialogHeader>
       <DialogDescription className="sr-only">Connect your messaging accounts and choose the appearance of Chattahoochee.</DialogDescription>
       <div className="settings-body">
@@ -71,15 +83,15 @@ export function AccountDialog({ state, open, onOpenChange, initialSection = 'acc
             </div>)}</div>
             {!state.accounts.length && !adding && <div className="accounts-empty"><div className="provider-pair"><ProviderIcon provider="skype" /><span>+</span><ProviderIcon provider="teamwire" /></div><h3>A home for both your accounts</h3><p>Connect Skype for Business or Teamwire to see your conversations here.</p><Button onClick={() => setAdding(true)}>Connect an account<ArrowRight /></Button></div>}
             {adding && <form className="connect-form" onSubmit={(event) => void connect(event)}>
-              <div className="form-section-title"><h3>Connect an account</h3><IconButton label="Cancel account setup" onClick={() => { setAdding(false); setPassword(''); setError(''); }} disabled={pending}><X /></IconButton></div>
-              <div className="provider-chooser" aria-label="Choose messaging service">{(['skype', 'teamwire'] as const).map((item) => <button type="button" key={item} className={cn(provider === item && 'is-active')} aria-pressed={provider === item} onClick={() => { setProvider(item); setPassword(''); setError(''); }} disabled={pending}><ProviderIcon provider={item} /><span>{providerName(item)}</span>{provider === item && <Check />}</button>)}</div>
+              <div className="form-section-title"><h3>Connect an account</h3><IconButton label="Cancel account setup" onClick={cancelSetup} disabled={pending}><X /></IconButton></div>
+              <div className="provider-chooser" aria-label="Choose messaging service">{(['skype', 'teamwire'] as const).map((item) => <button type="button" key={item} className={cn(provider === item && 'is-active')} aria-pressed={provider === item} onClick={() => chooseProvider(item)} disabled={pending}><ProviderIcon provider={item} /><span>{providerName(item)}</span>{provider === item && <Check />}</button>)}</div>
               <label className="form-field"><span>Sign-in address</span><input name="address" type="email" autoComplete="username" placeholder="you@company.com" value={address} onChange={(event) => setAddress(event.target.value)} required disabled={pending} /></label>
               {provider === 'skype' && <label className="form-field"><span>Advanced login username<span className="field-optional">Optional</span></span><input name="loginUsername" autoComplete="off" placeholder="DOMAIN\username" value={loginUsername} onChange={(event) => setLoginUsername(event.target.value)} disabled={pending} /><small>Use the username from your client’s advanced sign-in settings.</small></label>}
               <label className="form-field"><span>Password</span><span className="password-input"><input name="password" type={showPassword ? 'text' : 'password'} autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} required disabled={pending} /><IconButton label={showPassword ? 'Hide password' : 'Show password'} onClick={() => setShowPassword(!showPassword)}>{showPassword ? <EyeOff /> : <Eye />}</IconButton></span></label>
               {provider === 'teamwire' ? <label className="form-field"><span>Teamwire server</span><input name="server" type="url" placeholder="https://messenger.company.com" value={server} onChange={(event) => setServer(event.target.value)} required disabled={pending} /></label> : <details className="advanced-settings"><summary>Server settings</summary><label className="form-field"><span>Discovery URL<span className="field-optional">Optional</span></span><input name="server" type="url" placeholder="Automatic discovery" value={server} onChange={(event) => setServer(event.target.value)} disabled={pending} /></label></details>}
               <p className="credential-note"><ShieldCheck />Your password isn’t saved to disk. You’ll enter it again next time.</p>
               {error && <p className="form-error" role="alert">{error}</p>}
-              <div className="form-actions"><Button type="button" variant="ghost" onClick={() => { setAdding(false); setPassword(''); }} disabled={pending}>Cancel</Button><Button type="submit" disabled={pending || !address.trim() || !password}>{pending ? <><LoaderCircle className="spin" />Connecting…</> : <>Connect account<ArrowRight /></>}</Button></div>
+              <div className="form-actions"><Button type="button" variant="ghost" onClick={cancelSetup} disabled={pending}>Cancel</Button><Button type="submit" disabled={pending || !address.trim() || !password}>{pending ? <><LoaderCircle className="spin" />Connecting…</> : <>Connect account<ArrowRight /></>}</Button></div>
             </form>}
             {!adding && <div className="demo-switch"><div><FlaskConical /><span>{state.mode === 'demo' ? 'Ready for your own conversations?' : 'Want to have a look around first?'}</span></div><button type="button" onClick={() => { state.mode === 'demo' ? onExitDemo() : onEnterDemo(); onOpenChange(false); }}>{state.mode === 'demo' ? 'Leave demo workspace' : 'Explore demo workspace'}<ArrowRight /></button></div>}
             {error && !adding && <p className="form-error" role="alert">{error}</p>}

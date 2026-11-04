@@ -61,7 +61,7 @@ test('equal native ids remain isolated between accounts and mismatched events ar
   const { store, connectors } = harness();
   await store.connectAccount(input); await store.connectAccount({ ...input, provider: 'skype' });
   const [first, second] = store.getSnapshot().accounts;
-  const a = conversation(first!.id); const b = conversation(second!.id);
+  const a = conversation(first!.id); const b = { ...conversation(second!.id), provider: 'skype' as const };
   connectors[0]!.context.emit({ type: 'conversation', conversation: a });
   connectors[1]!.context.emit({ type: 'conversation', conversation: b });
   connectors[0]!.context.emit({ type: 'message', message: message(a) });

@@ -168,7 +168,7 @@ test('people and new conversation stay scoped to the selected account', async ({
   await expect(page.getByRole('main')).toHaveAttribute('aria-label', 'Conversation with Oliver Park');
   await page.getByRole('button', { name: 'New conversation', exact: true }).click();
   const dialog = page.getByRole('dialog', { name: 'New conversation', exact: true });
-  await dialog.getByLabel('Send from', { exact: true }).selectOption('demo:teamwire');
+  await dialog.getByRole('combobox', { name: 'Send from', exact: true }).selectOption('demo:teamwire');
   await expect(dialog.getByRole('button', { name: /Maya Chen/ })).toBeVisible();
   await expect(dialog.getByRole('button', { name: /Oliver Park/ })).toHaveCount(0);
   await dialog.getByRole('button', { name: /Maya Chen/ }).click();

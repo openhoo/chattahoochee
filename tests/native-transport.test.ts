@@ -57,6 +57,50 @@ test('native binary bridge preserves every byte in both directions and scopes it
   assert.equal(response.url, `${firstOrigin}/messages`);
 });
 
+test('streaming request chunks are copied before a producer reuses its buffer', async () => {
+  let source!: ReadableStreamDefaultController<Uint8Array>;
+  const body = new ReadableStream<Uint8Array>({ start(controller) { source = controller; } });
+  const native = bridge(({ command }) => command === 'account_http' ? reply() : undefined);
+  const transport = new NativeAccountTransport('account-one', native.invoke);
+  await transport.allowOrigins([firstOrigin]);
+  const input = new Request(firstOrigin, { method: 'POST', credentials: 'omit', body, duplex: 'half' } as RequestInit);
+  const pending = transport.fetch(input);
+  const reused = new Uint8Array([1, 2]);
+  source.enqueue(reused);
+  await turn();
+  reused.set([3, 4]);
+  source.enqueue(reused);
+  await turn();
+  source.close();
+  await pending;
+  const payload = native.calls.find((call) => call.command === 'account_http')!.args;
+  assert.deepEqual(Buffer.from(String(payload.body), 'base64'), Buffer.from([1, 2, 3, 4]));
+});
+
+test('non-byte request streams fail as TypeError and cancel their source before IPC', async () => {
+  let source!: ReadableStreamDefaultController<Uint8Array>;
+  let sourceCancelled = false;
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) { source = controller; controller.enqueue('invalid byte chunk' as unknown as Uint8Array); },
+    cancel() { sourceCancelled = true; },
+  });
+  const native = bridge(({ command }) => command === 'account_http' ? reply() : undefined);
+  const transport = new NativeAccountTransport('account-one', native.invoke);
+  await transport.allowOrigins([firstOrigin]);
+  const input = new Request(firstOrigin, { method: 'POST', credentials: 'omit', body, duplex: 'half' } as RequestInit);
+  let rejection: unknown;
+  const completed = transport.fetch(input).catch((error: unknown) => { rejection = error; });
+  await turn();
+  try {
+    assert.ok(rejection instanceof TypeError);
+    assert.equal(sourceCancelled, true);
+    assert.equal(native.calls.some((call) => call.command === 'account_http'), false);
+  } finally {
+    if (!sourceCancelled) source.close();
+    await completed;
+  }
+});
+
 test('HTTP 401 and all duplicate authentication challenges reach the SDK response', async () => {
   const native = bridge(({ command }) => command === 'account_http' ? reply({
     status: 401,
@@ -84,6 +128,27 @@ test('bodyless response statuses and HEAD responses construct valid Fetch respon
     assert.equal(response.body, null);
     assert.equal(await response.text(), '');
   }
+});
+
+test('manual redirect responses remain inspectable without forwarding account credentials', async () => {
+  for (const status of [301, 302, 303, 307, 308]) {
+    const destination = 'https://unapproved.example.test/token';
+    const native = bridge(({ command }) => command === 'account_http' ? reply({ status, headers: [['location', destination]] }) : undefined);
+    const transport = new NativeAccountTransport('account-one', native.invoke);
+    await transport.allowOrigins([firstOrigin]);
+    const response = await transport.fetch(firstOrigin, { credentials: 'omit', redirect: 'manual', headers: { authorization: 'Bearer synthetic-token' } });
+    assert.equal(response.status, status);
+    assert.equal(response.headers.get('location'), destination);
+    assert.equal(native.calls.filter((call) => call.command === 'account_http').length, 1);
+  }
+});
+
+test('Fetch redirect error mode rejects redirect responses without a second native request', async () => {
+  const native = bridge(({ command }) => command === 'account_http' ? reply({ status: 302, headers: [['location', `${secondOrigin}/token`]] }) : undefined);
+  const transport = new NativeAccountTransport('account-one', native.invoke);
+  await transport.allowOrigins([firstOrigin, secondOrigin]);
+  await assert.rejects(transport.fetch(firstOrigin, { credentials: 'omit', redirect: 'error' }), TypeError);
+  assert.equal(native.calls.filter((call) => call.command === 'account_http').length, 1);
 });
 
 test('only explicitly approved origins are available to the corresponding account', async () => {
@@ -192,6 +257,97 @@ test('in-flight abort sends the account and request IDs and rejects a late nativ
   });
 });
 
+test('aborting Fetch rejects before the native cancellation acknowledgement or response arrives', async () => {
+  const response = deferred<ReturnType<typeof reply>>();
+  const cancellation = deferred<void>();
+  const native = bridge(({ command }) => command === 'account_http' ? response.promise : command === 'cancel_account_http' ? cancellation.promise : undefined);
+  const transport = new NativeAccountTransport('account-one', native.invoke);
+  await transport.allowOrigins([firstOrigin]);
+  const controller = new AbortController();
+  const reason = new DOMException('Synthetic local cancellation', 'AbortError');
+  const request = transport.fetch(firstOrigin, { credentials: 'omit', signal: controller.signal });
+  let rejection: unknown;
+  const completed = request.catch((error: unknown) => { rejection = error; });
+  await turn();
+  controller.abort(reason);
+  await turn();
+  try {
+    assert.equal(rejection, reason, 'Fetch must settle locally while native IPC is still pending');
+  } finally {
+    response.resolve(reply());
+    cancellation.resolve();
+    await completed;
+  }
+});
+
+test('aborting a pending streaming request body cancels its source without native dispatch', async () => {
+  let bodyController!: ReadableStreamDefaultController<Uint8Array>;
+  let sourceCancelled = false;
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) { bodyController = controller; },
+    cancel() { sourceCancelled = true; },
+  });
+  const native = bridge();
+  const transport = new NativeAccountTransport('account-one', native.invoke);
+  await transport.allowOrigins([firstOrigin]);
+  const controller = new AbortController();
+  const reason = new DOMException('Cancel the request body', 'AbortError');
+  const input = new Request(firstOrigin, { method: 'POST', credentials: 'omit', body, duplex: 'half', signal: controller.signal } as RequestInit);
+  let rejection: unknown;
+  const completed = transport.fetch(input).catch((error: unknown) => { rejection = error; });
+  await turn();
+  controller.abort(reason);
+  await turn();
+  try {
+    assert.equal(rejection, reason);
+    assert.equal(sourceCancelled, true);
+    assert.equal(native.calls.some((call) => call.command === 'account_http'), false);
+  } finally {
+    if (!sourceCancelled) bodyController.close();
+    await completed;
+  }
+});
+
+test('an oversized streaming request body is stopped before buffering or IPC can continue', async () => {
+  let bodyController!: ReadableStreamDefaultController<Uint8Array>;
+  let sourceCancelled = false;
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) { bodyController = controller; controller.enqueue(new Uint8Array(10 * 1024 * 1024 + 1)); },
+    cancel() { sourceCancelled = true; },
+  });
+  const native = bridge(({ command }) => command === 'account_http' ? reply() : undefined);
+  const transport = new NativeAccountTransport('account-one', native.invoke);
+  await transport.allowOrigins([firstOrigin]);
+  const input = new Request(firstOrigin, { method: 'POST', credentials: 'omit', body, duplex: 'half' } as RequestInit);
+  let rejection: unknown;
+  const completed = transport.fetch(input).catch((error: unknown) => { rejection = error; });
+  await turn();
+  try {
+    assert.ok(rejection instanceof NativeTransportError);
+    assert.equal(rejection.code, 'request_too_large');
+    assert.equal(sourceCancelled, true);
+    assert.equal(native.calls.some((call) => call.command === 'account_http'), false);
+  } finally {
+    if (!sourceCancelled) bodyController.close();
+    await completed;
+  }
+});
+
+test('a request body exactly at the native ten mebibyte limit is still sent intact', async () => {
+  const native = bridge(({ command }) => command === 'account_http' ? reply() : undefined);
+  const transport = new NativeAccountTransport('account-one', native.invoke);
+  await transport.allowOrigins([firstOrigin]);
+  const body = new Uint8Array(10 * 1024 * 1024);
+  body[0] = 255;
+  body[body.length - 1] = 128;
+  await transport.fetch(firstOrigin, { method: 'POST', credentials: 'omit', body });
+  const payload = native.calls.find((call) => call.command === 'account_http')!.args;
+  const decoded = Buffer.from(String(payload.body), 'base64');
+  assert.equal(decoded.byteLength, body.byteLength);
+  assert.equal(decoded[0], 255);
+  assert.equal(decoded.at(-1), 128);
+});
+
 test('account removal rejects its pending request as AbortError while another account completes', async () => {
   const pending = new Map<string, ReturnType<typeof deferred<ReturnType<typeof reply>>>>();
   const native = bridge(({ command, args }) => {
@@ -232,6 +388,27 @@ test('closing immediately prevents new requests even while native removal is pen
   assert.equal(native.calls.filter((call) => call.command === 'remove_account_transport').length, 1);
 });
 
+test('closing an account promptly rejects active Fetch calls while native removal is pending', async () => {
+  const response = deferred<ReturnType<typeof reply>>();
+  const removal = deferred<void>();
+  const native = bridge(({ command }) => command === 'account_http' ? response.promise : command === 'remove_account_transport' ? removal.promise : undefined);
+  const transport = new NativeAccountTransport('account-one', native.invoke);
+  await transport.allowOrigins([firstOrigin]);
+  let rejection: unknown;
+  const completed = transport.fetch(firstOrigin, { credentials: 'omit' }).catch((error: unknown) => { rejection = error; });
+  await turn();
+  const closing = transport.close();
+  await turn();
+  try {
+    assert.ok(rejection instanceof DOMException);
+    assert.equal(rejection.name, 'AbortError');
+  } finally {
+    response.resolve(reply());
+    removal.resolve();
+    await Promise.all([completed, closing]);
+  }
+});
+
 test('a native reply that wins the removal race is discarded after the account closes', async () => {
   const response = deferred<ReturnType<typeof reply>>();
   const native = bridge(({ command }) => command === 'account_http' ? response.promise : undefined);
@@ -245,21 +422,28 @@ test('a native reply that wins the removal race is discarded after the account c
   await rejected;
 });
 
-test('closing while a request body is being read prevents later native dispatch', async () => {
+test('closing while a request body is being read cancels the source before native dispatch', async () => {
   let bodyController!: ReadableStreamDefaultController<Uint8Array>;
-  const body = new ReadableStream<Uint8Array>({ start(controller) { bodyController = controller; } });
+  let sourceCancelled = false;
+  const body = new ReadableStream<Uint8Array>({ start(controller) { bodyController = controller; }, cancel() { sourceCancelled = true; } });
   const native = bridge(({ command }) => command === 'account_http' ? reply() : undefined);
   const transport = new NativeAccountTransport('account-one', native.invoke);
   await transport.allowOrigins([firstOrigin]);
   const input = new Request(firstOrigin, { method: 'POST', credentials: 'omit', body, duplex: 'half' } as RequestInit);
-  const request = transport.fetch(input);
-  const rejected = assert.rejects(request, { code: 'transport_closed' });
+  let rejection: unknown;
+  const completed = transport.fetch(input).catch((error: unknown) => { rejection = error; });
   await turn();
   await transport.close();
-  bodyController.enqueue(new TextEncoder().encode('Synthetic request body'));
-  bodyController.close();
-  await rejected;
-  assert.equal(native.calls.filter((call) => call.command === 'account_http').length, 0);
+  await turn();
+  try {
+    assert.ok(rejection instanceof NativeTransportError);
+    assert.equal(rejection.code, 'transport_closed');
+    assert.equal(sourceCancelled, true);
+    assert.equal(native.calls.filter((call) => call.command === 'account_http').length, 0);
+  } finally {
+    if (!sourceCancelled) bodyController.close();
+    await completed;
+  }
 });
 
 test('close waits for configuration cleanup and cannot resurrect a native account', async () => {
@@ -328,4 +512,59 @@ test('explicit account or origin boundary errors stop discovery without trying a
   const client = new SkypeForHoo({ sipAddress: 'alex@example.test', auth: bearerAuth('synthetic-token'), fetch: transport.fetch });
   await assert.rejects(client.discover(), (error: unknown) => error instanceof NativeTransportError && error.code === 'origin_not_allowed');
   assert.equal(native.calls.filter((call) => call.command === 'account_http').length, 1);
+});
+
+test('native timeout, cancellation and policy errors preserve their distinct Fetch semantics', async () => {
+  for (const [code, expectedName] of [['request_timeout', 'TimeoutError'], ['request_cancelled', 'AbortError'], ['forbidden_header', 'NativeTransportError'], ['response_too_large', 'NativeTransportError'], ['account_not_configured', 'NativeTransportError']] as const) {
+    const native = bridge(({ command }) => {
+      if (command === 'account_http') throw { code, message: 'Sensitive native diagnostic details must not be shown.' };
+    });
+    const transport = new NativeAccountTransport('account-one', native.invoke);
+    await transport.allowOrigins([firstOrigin]);
+    await assert.rejects(transport.fetch(firstOrigin, { credentials: 'omit' }), (error: unknown) => {
+      assert.ok(error instanceof Error);
+      assert.equal(error.name, expectedName);
+      assert.equal(error.message.includes('Sensitive'), false);
+      if (error instanceof NativeTransportError) assert.equal(error.code, code);
+      return true;
+    });
+    assert.equal(native.calls.filter((call) => call.command === 'account_http').length, 1);
+  }
+});
+
+test('completed and failed requests detach caller and account cancellation listeners', async () => {
+  for (const fail of [false, true]) {
+    const native = bridge(({ command }) => {
+      if (command !== 'account_http') return;
+      if (fail) throw { code: 'connection_failed' };
+      return reply();
+    });
+    const transport = new NativeAccountTransport('account-one', native.invoke);
+    await transport.allowOrigins([firstOrigin]);
+    const controller = new AbortController();
+    const request = transport.fetch(firstOrigin, { credentials: 'omit', signal: controller.signal });
+    if (fail) await assert.rejects(request, TypeError); else await request;
+    controller.abort();
+    await transport.close();
+    await turn();
+    assert.equal(native.calls.filter((call) => call.command === 'cancel_account_http').length, 0);
+  }
+});
+
+test('failed cancellation acknowledgement and late native rejection cannot replace the caller reason', async () => {
+  const response = deferred<ReturnType<typeof reply>>();
+  const native = bridge(({ command }) => {
+    if (command === 'account_http') return response.promise;
+    if (command === 'cancel_account_http') throw { code: 'transport_unavailable', message: 'Synthetic cancellation acknowledgement failure' };
+  });
+  const transport = new NativeAccountTransport('account-one', native.invoke);
+  await transport.allowOrigins([firstOrigin]);
+  const controller = new AbortController();
+  const reason = new DOMException('The caller stopped this request', 'AbortError');
+  const request = transport.fetch(firstOrigin, { credentials: 'omit', signal: controller.signal });
+  await turn();
+  controller.abort(reason);
+  await assert.rejects(request, (error: unknown) => error === reason);
+  response.reject({ code: 'request_failed', message: 'Synthetic late IPC rejection' });
+  await turn();
 });

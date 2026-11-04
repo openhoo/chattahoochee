@@ -7,7 +7,7 @@ export type ConnectorEvent =
   | { type: 'delivery'; messageId: string; conversationId: string; delivery: MessageDelivery }
   | { type: 'typing'; conversationId: string; names: string[] }
   | { type: 'select-conversation'; conversationId: string }
-  | { type: 'error'; message: string };
+  | { type: 'error'; message: string; recoverable?: boolean };
 
 export interface ConnectorContext {
   accountId: string;

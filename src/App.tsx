@@ -28,7 +28,7 @@ export function App() {
     return () => media.removeEventListener('change', apply);
   }, [state.theme]);
 
-  return <AppShell state={state} desktop={desktopAvailable()}
+  return <AppShell key={state.mode} state={state} desktop={desktopAvailable()}
     onSelectConversation={messenger.selectConversation} onSendMessage={messenger.sendMessage} onSetTyping={messenger.setTyping}
     onConnectAccount={messenger.connectAccount} onDisconnectAccount={messenger.disconnectAccount} onStartConversation={messenger.startConversation}
     onChangeTheme={messenger.setTheme} onTogglePinned={messenger.togglePinned} onEnterDemo={messenger.enterDemo} onExitDemo={messenger.exitDemo}

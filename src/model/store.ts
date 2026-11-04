@@ -48,6 +48,14 @@ export class MessengerStore {
     })();
     return connection.cleanup;
   }
+  private liveConnection(accountId: string): Connection | undefined {
+    if (this.state.mode !== 'live' || this.state.accounts.find(account => account.id === accountId)?.status !== 'connected') return;
+    const connection = this.connections.get(accountId);
+    return connection?.lifetime.signal.aborted ? undefined : connection;
+  }
+  private failPendingMessages(accountId: string, error: string): AppSnapshot['messages'] {
+    return Object.fromEntries(Object.entries(this.state.messages).map(([id, messages]) => [id, messages.map(message => message.accountId === accountId && message.delivery === 'pending' ? { ...message, delivery: 'failed' as const, error } : message)]));
+  }
   readonly dismissNotice = () => this.publish({ ...this.state, notice: null });
 
   readonly setTheme = (theme: Theme) => { this.publish({ ...this.state, theme }); };
@@ -55,8 +63,10 @@ export class MessengerStore {
     const conversation = this.state.conversations.find((value) => value.id === id);
     if (!conversation) return;
     this.publish({ ...this.state, selectedConversationId: id, conversations: this.state.conversations.map((value) => value.id === id ? { ...value, unread: 0 } : value) });
-    if (this.state.mode === 'live') void this.connections.get(conversation.accountId)?.connector.loadConversation?.(conversation).catch(() => this.notice('The conversation history could not be loaded.', 'error'));
-    if (this.state.mode === 'live' && conversation.capabilities.markRead) void this.connections.get(conversation.accountId)?.connector.markRead?.(conversation).catch(() => this.notice('The read status could not be synchronized.', 'error'));
+    const connection = this.liveConnection(conversation.accountId);
+    if (!connection) return;
+    void connection.connector.loadConversation?.(conversation).catch(() => { if (this.liveConnection(conversation.accountId) === connection) this.notice('The conversation history could not be loaded.', 'error'); });
+    if (conversation.capabilities.markRead) void connection.connector.markRead?.(conversation).catch(() => { if (this.liveConnection(conversation.accountId) === connection) this.notice('The read status could not be synchronized.', 'error'); });
   };
 
   readonly togglePinned = (id: string) => this.publish({ ...this.state, conversations: this.state.conversations.map((value) => value.id === id ? { ...value, pinned: !value.pinned } : value) });
@@ -92,22 +102,31 @@ export class MessengerStore {
     if (this.state.mode === 'demo') { this.notice('Leave the demo workspace before connecting a real account.'); throw new Error('Leave the demo workspace first.'); }
     if (!(this.options.isDesktop ?? desktopAvailable)()) { this.notice('Open the desktop app to connect an account. The browser preview supports the demo workspace.', 'info'); throw new Error('Account connections require the desktop app.'); }
     if (!input.address.trim() || !input.password || (input.provider === 'teamwire' && !input.server?.trim())) throw new Error('Complete the required account fields.');
+    let service: URL | undefined;
+    if (input.server?.trim()) {
+      try {
+        const server = input.server.trim();
+        service = new URL(server.includes('://') ? server : `https://${server}`);
+        if (service.protocol !== 'https:' || service.username || service.password || service.search || service.hash || (input.provider === 'teamwire' && service.pathname !== '/')) throw new Error('Invalid service URL');
+      } catch {
+        throw new Error(input.provider === 'teamwire' ? 'Use a Teamwire HTTPS origin without a path, credentials, query or fragment.' : 'Use an HTTPS discovery URL without credentials, query or fragment.');
+      }
+    }
     const accountId = crypto.randomUUID();
     const label = input.label?.trim() || (input.provider === 'skype' ? 'Skype for Business' : 'Teamwire');
-    const transport = this.options.transportFactory?.(accountId) ?? new NativeAccountTransport(accountId);
     const connector = this.options.connectorFactory?.(input.provider) ?? (input.provider === 'skype' ? new SkypeConnector() : new TeamwireConnector());
+    const transport = this.options.transportFactory?.(accountId) ?? new NativeAccountTransport(accountId);
     const connection: Connection = { connector, transport, lifetime: new AbortController() };
     this.connections.set(accountId, connection);
-    this.publish({ ...this.state, accounts: [...this.state.accounts, { id: accountId, provider: input.provider, label, address: input.address.trim(), ...(input.server ? { server: input.server.trim() } : {}), status: 'connecting' }] });
+    this.publish({ ...this.state, accounts: [...this.state.accounts, { id: accountId, provider: input.provider, label, address: input.address.trim(), ...(service ? { server: service.href } : {}), status: 'connecting' }] });
     try {
-      const service = input.server ? new URL(input.server.includes('://') ? input.server : `https://${input.server}`) : undefined;
       const origins = input.provider === 'skype'
         ? (service ? [service.origin] : defaultDiscoveryUrls(input.address).map((url) => new URL(url).origin))
         : [service!.origin];
       connection.setup = (async () => {
         await transport.allowOrigins([...origins, ...(input.trustedOrigins ?? [])]);
         connection.lifetime.signal.throwIfAborted();
-        await connector.connect(input, {
+        await connector.connect({ ...input, ...(service ? { server: service.href } : {}) }, {
           accountId, fetch: transport.fetch, signal: connection.lifetime.signal,
           approveOrigin: (origin) => this.requestOrigin(accountId, origin, connection),
           emit: (event) => { if (!connection.lifetime.signal.aborted) this.receive(accountId, event); },
@@ -120,7 +139,7 @@ export class MessengerStore {
       const cancelled = connection.lifetime.signal.aborted;
       await this.cleanupConnection(connection).catch(() => {});
       this.connections.delete(accountId);
-      if (cancelled) return;
+      if (cancelled || this.state.accounts.find(account => account.id === accountId)?.status === 'disconnected') return;
       const message = safeError(error);
       this.publish({ ...this.state, accounts: this.state.accounts.map((account) => account.id === accountId ? { ...account, status: 'error', error: message } : account), notice: { id: crypto.randomUUID(), kind: 'error', message } });
       throw new Error(message);
@@ -133,6 +152,7 @@ export class MessengerStore {
     this.publish({ ...this.state,
       accounts: this.state.accounts.map((account) => account.id === accountId ? { ...account, status: 'disconnected', error: undefined } : account),
       conversations: this.state.conversations.map((conversation) => conversation.accountId === accountId ? { ...conversation, capabilities: { ...conversation.capabilities, sendMessages: false, typing: false, markRead: false } } : conversation),
+      messages: this.failPendingMessages(accountId, 'The account disconnected before delivery could be confirmed.'),
       typing: Object.fromEntries(Object.entries(this.state.typing).filter(([id]) => !this.state.conversations.some((value) => value.accountId === accountId && value.id === id))),
     });
     if (connection) {
@@ -143,25 +163,26 @@ export class MessengerStore {
   };
 
   receive(accountId: string, event: ConnectorEvent): void {
-    if (this.state.mode !== 'live' || !this.state.accounts.some((value) => value.id === accountId)) return;
+    const account = this.state.accounts.find(value => value.id === accountId);
+    if (this.state.mode !== 'live' || !account || account.status === 'disconnected') return;
     const state = this.state;
     if (event.type === 'conversation') {
-      if (event.conversation.accountId !== accountId || event.conversation.id !== scopedId(accountId, event.conversation.nativeId)) return;
+      if (event.conversation.accountId !== accountId || event.conversation.provider !== account.provider || event.conversation.id !== scopedId(accountId, event.conversation.nativeId)) return;
       const previous = state.conversations.find((value) => value.id === event.conversation.id);
       const conversation = previous ? { ...event.conversation, pinned: previous.pinned, unread: previous.unread, preview: event.conversation.preview || previous.preview, updatedAt: previous.updatedAt > event.conversation.updatedAt ? previous.updatedAt : event.conversation.updatedAt } : event.conversation;
       this.publish({ ...state, conversations: previous ? state.conversations.map((value) => value.id === conversation.id ? conversation : value) : [...state.conversations, conversation], selectedConversationId: state.selectedConversationId ?? conversation.id });
     } else if (event.type === 'contact') {
-      if (event.contact.accountId !== accountId || event.contact.id !== scopedId(accountId, event.contact.nativeId)) return;
+      if (event.contact.accountId !== accountId || event.contact.provider !== account.provider || event.contact.id !== scopedId(accountId, event.contact.nativeId)) return;
       this.publish({ ...state, contacts: [...state.contacts.filter((value) => value.id !== event.contact.id), event.contact] });
     } else if (event.type === 'message') {
       const message = event.message;
       if (message.accountId !== accountId || !message.id.startsWith(`${encodeURIComponent(accountId)}::`) || !state.conversations.some((value) => value.id === message.conversationId && value.accountId === accountId)) return;
       const existing = state.messages[message.conversationId] ?? [];
-      const previous = existing.find((value) => value.id === message.id);
+      const previous = existing.find((value) => value.id === message.id) ?? existing.find((value) => value.id === event.replacesMessageId);
       const next = previous ? { ...message, body: message.body || previous.body, delivery: mergeDelivery(previous.delivery, message.delivery, true) } : message;
       const messages = [...existing.filter((value) => value.id !== message.id && value.id !== event.replacesMessageId), next].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
       this.publish({ ...state, messages: { ...state.messages, [message.conversationId]: messages }, conversations: state.conversations.map((conversation) => conversation.id === message.conversationId ? {
-        ...conversation, preview: messages.at(-1)?.body || conversation.preview, updatedAt: (messages.at(-1)?.createdAt ?? '') > conversation.updatedAt ? messages.at(-1)!.createdAt : conversation.updatedAt,
+        ...conversation, preview: (messages.at(-1)?.createdAt ?? '') >= conversation.updatedAt ? messages.at(-1)?.body || conversation.preview : conversation.preview, updatedAt: (messages.at(-1)?.createdAt ?? '') > conversation.updatedAt ? messages.at(-1)!.createdAt : conversation.updatedAt,
         unread: conversation.unread + (!previous && !event.historical && message.direction === 'incoming' && state.selectedConversationId !== conversation.id ? 1 : 0),
       } : conversation) });
     } else if (event.type === 'delivery') {
@@ -173,7 +194,13 @@ export class MessengerStore {
     } else if (event.type === 'select-conversation') {
       if (state.conversations.some((value) => value.id === event.conversationId && value.accountId === accountId)) this.selectConversation(event.conversationId);
     } else if (event.type === 'error') {
-      this.publish({ ...state, accounts: state.accounts.map((account) => account.id === accountId ? { ...account, status: 'error', error: event.message } : account), notice: { id: crypto.randomUUID(), kind: 'error', message: event.message } });
+      this.publish({ ...state,
+        accounts: event.recoverable ? state.accounts : state.accounts.map((account) => account.id === accountId ? { ...account, status: 'error', error: event.message } : account),
+        conversations: event.recoverable ? state.conversations : state.conversations.map(conversation => conversation.accountId === accountId ? { ...conversation, capabilities: { ...conversation.capabilities, sendMessages: false, typing: false, markRead: false } } : conversation),
+        messages: event.recoverable ? state.messages : this.failPendingMessages(accountId, 'The account connection failed before delivery could be confirmed.'),
+        typing: event.recoverable ? state.typing : Object.fromEntries(Object.entries(state.typing).filter(([id]) => !state.conversations.some(conversation => conversation.id === id && conversation.accountId === accountId))),
+        notice: { id: crypto.randomUUID(), kind: 'error', message: event.message },
+      });
     }
   }
 
@@ -181,6 +208,8 @@ export class MessengerStore {
     const body = text.trim();
     if (!body || body.length > 20_000) throw new Error('Messages must contain 1 to 20,000 characters.');
     const conversation = this.state.conversations.find((value) => value.id === conversationId);
+    const connection = conversation && this.liveConnection(conversation.accountId);
+    if (this.state.mode === 'live' && !connection) throw new Error('Account is not connected.');
     if (!conversation || !conversation.capabilities.sendMessages) throw new Error('Sending is unavailable for this conversation.');
     const operationId = crypto.randomUUID();
     const id = scopedId(conversation.accountId, operationId);
@@ -191,14 +220,15 @@ export class MessengerStore {
       this.publish({ ...this.state, messages: { ...this.state.messages, [conversationId]: this.state.messages[conversationId]!.map((value) => value.id === id ? { ...value, delivery: 'accepted' } : value) } });
       return;
     }
-    const connection = this.connections.get(conversation.accountId);
     try {
-      if (!connection || this.state.accounts.find((value) => value.id === conversation.accountId)?.status !== 'connected') throw new Error('Account is not connected.');
+      if (!connection) throw new Error('Account is not connected.');
       await connection.connector.sendMessage(conversation, body, operationId);
+      if (this.liveConnection(conversation.accountId) !== connection) throw new Error('Account disconnected before delivery could be confirmed.');
       this.receive(conversation.accountId, { type: 'delivery', messageId: id, conversationId, delivery: 'accepted' });
     } catch (error) {
       const current = this.state.messages[conversationId]?.find((value) => value.id === id);
       if (current?.delivery === 'accepted' || current?.delivery === 'delivered' || current?.delivery === 'read') return;
+      if (this.liveConnection(conversation.accountId) !== connection) throw new Error('Account disconnected before delivery could be confirmed.');
       this.publish({ ...this.state, messages: { ...this.state.messages, [conversationId]: (this.state.messages[conversationId] ?? []).map((value) => value.id === id ? { ...value, delivery: mergeDelivery(value.delivery, 'failed'), error: safeError(error) } : value) } });
       throw new Error(safeError(error));
     }
@@ -207,8 +237,10 @@ export class MessengerStore {
   readonly setTyping = (conversationId: string) => {
     const conversation = this.state.conversations.find((value) => value.id === conversationId);
     if (this.state.mode !== 'live' || !conversation?.capabilities.typing || Date.now() - (this.typingSent.get(conversationId) ?? 0) < 4000) return;
+    const connection = this.liveConnection(conversation.accountId);
+    if (!connection) return;
     this.typingSent.set(conversationId, Date.now());
-    void this.connections.get(conversation.accountId)?.connector.setTyping(conversation).catch(() => {});
+    void connection.connector.setTyping(conversation).catch(() => {});
   };
 
   readonly startConversation = async (accountId: string, address: string, name?: string): Promise<void> => {
@@ -219,10 +251,10 @@ export class MessengerStore {
       else this.notice('Choose one of the sample conversations to try the demo.');
       return;
     }
-    const connection = this.connections.get(accountId);
+    const connection = this.liveConnection(accountId);
     if (!connection || !address.trim()) throw new Error('Choose a connected account and enter an address.');
     try { await connection.connector.startConversation(address.trim(), name); }
-    catch (error) { const message = safeError(error); this.notice(message, 'error'); throw new Error(message); }
+    catch (error) { const message = safeError(error); if (this.liveConnection(accountId) === connection) this.notice(message, 'error'); throw new Error(message); }
   };
 
   async close(): Promise<void> { await Promise.allSettled([...this.connections.keys()].map((id) => this.disconnectAccount(id))); }

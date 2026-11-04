@@ -285,23 +285,25 @@ fn network_error(error: reqwest::Error) -> BrokerError {
     }
 }
 
+fn account_client() -> reqwest::ClientBuilder {
+    Client::builder()
+        .use_native_tls()
+        .https_only(true)
+        .redirect(reqwest::redirect::Policy::none())
+        .retry(reqwest::retry::never())
+        .referer(false)
+        .connect_timeout(Duration::from_secs(30))
+        .timeout(Duration::from_secs(210))
+}
+
 impl AccountHttpBroker {
     pub fn new() -> Result<Self, BrokerError> {
-        let client = Client::builder()
-            .use_native_tls()
-            .https_only(true)
-            .redirect(reqwest::redirect::Policy::none())
-            .retry(reqwest::retry::never())
-            .referer(false)
-            .connect_timeout(Duration::from_secs(30))
-            .timeout(Duration::from_secs(210))
-            .build()
-            .map_err(|_| {
-                BrokerError::new(
-                    "transport_unavailable",
-                    "The system TLS transport could not be initialized.",
-                )
-            })?;
+        let client = account_client().build().map_err(|_| {
+            BrokerError::new(
+                "transport_unavailable",
+                "The system TLS transport could not be initialized.",
+            )
+        })?;
         Ok(Self {
             client,
             registry: Arc::new(Mutex::new(Registry::default())),
@@ -514,6 +516,309 @@ impl AccountHttpBroker {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{
+        io::{Read, Write},
+        net::{TcpListener, TcpStream},
+        sync::atomic::{AtomicBool, Ordering},
+        thread::{self, JoinHandle},
+    };
+
+    fn loopback(
+        handler: impl FnOnce(TcpStream) + Send + 'static,
+    ) -> (Url, Arc<AtomicBool>, JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let url = Url::parse(&format!(
+            "http://{}/resource",
+            listener.local_addr().unwrap()
+        ))
+        .unwrap();
+        let accepted = Arc::new(AtomicBool::new(false));
+        let ready = Arc::clone(&accepted);
+        let task = thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(3);
+            loop {
+                match listener.accept() {
+                    Ok((stream, _)) => {
+                        stream.set_nonblocking(false).unwrap();
+                        stream
+                            .set_read_timeout(Some(Duration::from_secs(2)))
+                            .unwrap();
+                        stream
+                            .set_write_timeout(Some(Duration::from_secs(2)))
+                            .unwrap();
+                        ready.store(true, Ordering::SeqCst);
+                        handler(stream);
+                        break;
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(
+                            Instant::now() < deadline,
+                            "loopback fixture received no request"
+                        );
+                        thread::sleep(Duration::from_millis(2));
+                    }
+                    Err(error) => panic!("loopback fixture failed: {error}"),
+                }
+            }
+        });
+        (url, accepted, task)
+    }
+
+    fn read_request(stream: &mut TcpStream) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        let mut chunk = [0_u8; 8192];
+        loop {
+            let size = stream.read(&mut chunk).unwrap();
+            assert!(size > 0, "request ended before its headers");
+            bytes.extend_from_slice(&chunk[..size]);
+            if let Some(boundary) = bytes.windows(4).position(|part| part == b"\r\n\r\n") {
+                let content_length = String::from_utf8_lossy(&bytes[..boundary])
+                    .lines()
+                    .filter_map(|line| line.split_once(':'))
+                    .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+                    .map_or(0, |(_, value)| value.trim().parse::<usize>().unwrap());
+                if bytes.len() >= boundary + 4 + content_length {
+                    return bytes;
+                }
+            }
+        }
+    }
+
+    // Only this test client permits plaintext loopback. The shared builder still supplies the
+    // production redirect/retry policies; the public broker request path remains HTTPS-only.
+    fn loopback_broker(timeout: Duration) -> AccountHttpBroker {
+        AccountHttpBroker {
+            client: account_client()
+                .https_only(false)
+                .no_proxy()
+                .timeout(timeout)
+                .build()
+                .unwrap(),
+            registry: Arc::new(Mutex::new(Registry::default())),
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn redirects_are_returned_without_following_or_forwarding_authorization() {
+        let target = TcpListener::bind("127.0.0.1:0").unwrap();
+        target.set_nonblocking(true).unwrap();
+        let location = format!("http://{}/redirect-target", target.local_addr().unwrap());
+        let expected_location = location.clone();
+        let (url, _, server) = loopback(move |mut stream| {
+            let request = read_request(&mut stream);
+            assert!(
+                String::from_utf8_lossy(&request).contains("authorization: Bearer synthetic-token")
+            );
+            write!(stream, "HTTP/1.1 302 Found\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+        });
+        let broker = loopback_broker(Duration::from_secs(2));
+        let response = broker
+            .execute(
+                url.clone(),
+                Method::GET,
+                request_headers(vec![(
+                    "Authorization".into(),
+                    "Bearer synthetic-token".into(),
+                )])
+                .unwrap(),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status, 302);
+        assert_eq!(response.url, url.as_str());
+        assert!(response
+            .headers
+            .contains(&("location".into(), expected_location)));
+        assert_eq!(
+            target.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+        server.join().unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn wire_round_trip_preserves_binary_bodies_and_duplicate_authentication_challenges() {
+        let (url, _, server) = loopback(|mut stream| {
+            let request = read_request(&mut stream);
+            assert!(request.starts_with(b"POST /resource HTTP/1.1\r\n"));
+            assert!(request.ends_with(&[0, 128, 255, 10]));
+            stream.write_all(b"HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Bearer realm=\"one\"\r\nWWW-Authenticate: MsRtcOAuth grant_type=\"password\"\r\nContent-Type: application/octet-stream\r\nContent-Length: 6\r\nConnection: close\r\n\r\n").unwrap();
+            stream.write_all(&[255, 0, 128, 1, 254, 10]).unwrap();
+        });
+        let broker = loopback_broker(Duration::from_secs(2));
+        let response = broker
+            .execute(
+                url,
+                Method::POST,
+                HeaderMap::new(),
+                Some(vec![0, 128, 255, 10]),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status, 401);
+        assert_eq!(
+            BASE64.decode(&response.body).unwrap(),
+            vec![255, 0, 128, 1, 254, 10]
+        );
+        assert_eq!(
+            response
+                .headers
+                .iter()
+                .filter(|(name, _)| name == "www-authenticate")
+                .map(|(_, value)| value.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Bearer realm=\"one\"", "MsRtcOAuth grant_type=\"password\""]
+        );
+        server.join().unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn deadlines_cover_both_waiting_for_headers_and_reading_a_stalled_response_body() {
+        for send_headers in [false, true] {
+            let (url, _, server) = loopback(move |mut stream| {
+                read_request(&mut stream);
+                if send_headers {
+                    stream
+                        .write_all(
+                            b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\nx",
+                        )
+                        .unwrap();
+                }
+                thread::sleep(Duration::from_millis(250));
+            });
+            let broker = loopback_broker(Duration::from_millis(80));
+            let result = broker
+                .execute(url, Method::GET, HeaderMap::new(), None)
+                .await;
+            assert_eq!(result.err().unwrap().code, "request_timeout");
+            server.join().unwrap();
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn advertised_response_size_is_rejected_before_a_body_arrives() {
+        let (url, _, server) = loopback(|mut stream| {
+            read_request(&mut stream);
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                MAX_RESPONSE_BYTES + 1
+            )
+            .unwrap();
+        });
+        let broker = loopback_broker(Duration::from_secs(2));
+        assert_eq!(
+            broker
+                .execute(url, Method::GET, HeaderMap::new(), None)
+                .await
+                .err()
+                .unwrap()
+                .code,
+            "response_too_large"
+        );
+        server.join().unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn streamed_response_size_accepts_the_boundary_and_rejects_the_next_byte() {
+        for total in [MAX_RESPONSE_BYTES, MAX_RESPONSE_BYTES + 1] {
+            let (url, _, server) = loopback(move |mut stream| {
+                read_request(&mut stream);
+                stream
+                    .write_all(b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n")
+                    .unwrap();
+                let chunk = [0xa5; 64 * 1024];
+                let mut remaining = total;
+                while remaining > 0 {
+                    let size = remaining.min(chunk.len());
+                    if stream.write_all(&chunk[..size]).is_err() {
+                        break;
+                    }
+                    remaining -= size;
+                }
+            });
+            let broker = loopback_broker(Duration::from_secs(2));
+            let result = broker
+                .execute(url, Method::GET, HeaderMap::new(), None)
+                .await;
+            if total == MAX_RESPONSE_BYTES {
+                let response = result.unwrap();
+                let bytes = BASE64.decode(response.body).unwrap();
+                assert_eq!(bytes.len(), total);
+                assert!(bytes.iter().all(|byte| *byte == 0xa5));
+            } else {
+                assert_eq!(result.err().unwrap().code, "response_too_large");
+            }
+            server.join().unwrap();
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn cancellation_before_dispatch_never_opens_a_socket() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let origin = format!("https://{}", listener.local_addr().unwrap());
+        let broker = loopback_broker(Duration::from_secs(1));
+        broker.configure("first", vec![origin.clone()]).unwrap();
+        broker.cancel("first", "early").unwrap();
+        let result = broker
+            .request(BrokerRequest {
+                account_id: "first".into(),
+                request_id: "early".into(),
+                url: format!("{origin}/messages"),
+                method: "POST".into(),
+                headers: vec![],
+                body: Some("synthetic message".into()),
+                body_encoding: BodyEncoding::Utf8,
+            })
+            .await;
+        assert_eq!(result.err().unwrap().code, "request_cancelled");
+        assert_eq!(
+            listener.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn cancelling_an_active_connection_releases_its_request_identifier() {
+        let (release, hold) = std::sync::mpsc::channel();
+        let (mut url, accepted, server) = loopback(move |_stream| {
+            let _ = hold.recv_timeout(Duration::from_secs(3));
+        });
+        url.set_scheme("https").unwrap();
+        let broker = loopback_broker(Duration::from_secs(2));
+        broker
+            .configure("first", vec![url.origin().ascii_serialization()])
+            .unwrap();
+        let cancellation = async {
+            tokio::time::timeout(Duration::from_secs(1), async {
+                while !accepted.load(Ordering::SeqCst) {
+                    tokio::time::sleep(Duration::from_millis(2)).await;
+                }
+            })
+            .await
+            .unwrap();
+            broker.cancel("first", "active").unwrap();
+        };
+        let (result, ()) = tokio::join!(
+            broker.request(BrokerRequest {
+                account_id: "first".into(),
+                request_id: "active".into(),
+                url: url.to_string(),
+                method: "GET".into(),
+                headers: vec![],
+                body: None,
+                body_encoding: BodyEncoding::Utf8,
+            }),
+            cancellation
+        );
+        assert_eq!(result.err().unwrap().code, "request_cancelled");
+        assert!(broker.begin("first", "active", &url).is_ok());
+        release.send(()).unwrap();
+        server.join().unwrap();
+    }
 
     fn broker() -> AccountHttpBroker {
         let broker = AccountHttpBroker::new().unwrap();
@@ -521,6 +826,245 @@ mod tests {
             .configure("first", vec!["https://pool.example.com".into()])
             .unwrap();
         broker
+    }
+
+    #[test]
+    fn identifier_limits_count_bytes_and_reject_blank_or_control_characters() {
+        for invalid in [
+            String::new(),
+            " \t ".into(),
+            "request\nsecond".into(),
+            "x".repeat(257),
+            format!("{}a", "ä".repeat(128)),
+        ] {
+            assert_eq!(
+                validate_id(&invalid).unwrap_err().code,
+                "invalid_identifier"
+            );
+        }
+        assert!(validate_id(&"x".repeat(256)).is_ok());
+        assert!(validate_id(&"ä".repeat(128)).is_ok());
+    }
+
+    #[test]
+    fn header_limits_and_byte_string_validation_apply_at_the_exact_boundary() {
+        assert!(request_headers(vec![("x".into(), "a".repeat(MAX_HEADER_BYTES - 1))]).is_ok());
+        assert_eq!(
+            request_headers(vec![("x".into(), "a".repeat(MAX_HEADER_BYTES))])
+                .unwrap_err()
+                .code,
+            "headers_too_large"
+        );
+        assert!(request_headers(
+            (0..MAX_HEADERS)
+                .map(|index| (format!("x-{index}"), "value".into()))
+                .collect()
+        )
+        .is_ok());
+        assert_eq!(
+            request_headers(
+                (0..=MAX_HEADERS)
+                    .map(|index| (format!("x-{index}"), "value".into()))
+                    .collect()
+            )
+            .unwrap_err()
+            .code,
+            "headers_too_large"
+        );
+        assert_eq!(
+            request_headers(vec![("invalid header".into(), "value".into())])
+                .unwrap_err()
+                .code,
+            "invalid_header"
+        );
+        assert_eq!(
+            request_headers(vec![("x-test".into(), "€".into())])
+                .unwrap_err()
+                .code,
+            "invalid_header"
+        );
+        let headers = request_headers(vec![("x-test".into(), "Grüße".into())]).unwrap();
+        assert!(response_headers(&headers).contains(&("x-test".into(), "Grüße".into())));
+    }
+
+    #[test]
+    fn account_and_origin_limits_allow_reconfiguration_without_replacing_valid_scope_on_error() {
+        let broker = broker();
+        for index in 1..MAX_ACCOUNTS {
+            broker
+                .configure(
+                    &format!("account-{index}"),
+                    vec!["https://pool.example.com".into()],
+                )
+                .unwrap();
+        }
+        assert_eq!(
+            broker
+                .configure("overflow", vec!["https://pool.example.com".into()])
+                .unwrap_err()
+                .code,
+            "account_limit"
+        );
+        assert_eq!(
+            broker.configure("first", vec![]).unwrap_err().code,
+            "invalid_origins"
+        );
+        assert_eq!(
+            broker
+                .configure(
+                    "first",
+                    vec!["https://pool.example.com".into(); MAX_ORIGINS + 1]
+                )
+                .unwrap_err()
+                .code,
+            "invalid_origins"
+        );
+        assert_eq!(
+            broker
+                .configure(
+                    "first",
+                    vec!["https://pool.example.com/private/path".into()]
+                )
+                .unwrap_err()
+                .code,
+            "invalid_origin"
+        );
+        assert!(broker
+            .begin(
+                "first",
+                "original-scope",
+                &https_url("https://pool.example.com").unwrap()
+            )
+            .is_ok());
+        broker
+            .configure(
+                "first",
+                (0..MAX_ORIGINS)
+                    .map(|index| format!("https://pool-{index}.example.com"))
+                    .collect(),
+            )
+            .unwrap();
+        assert!(broker
+            .begin(
+                "first",
+                "new-scope",
+                &https_url("https://pool-63.example.com").unwrap()
+            )
+            .is_ok());
+        broker.remove("account-1").unwrap();
+        broker
+            .configure("overflow", vec!["https://pool.example.com".into()])
+            .unwrap();
+    }
+
+    #[test]
+    fn pending_request_limit_is_released_when_a_request_finishes() {
+        let broker = broker();
+        let url = https_url("https://pool.example.com").unwrap();
+        let mut pending: Vec<_> = (0..MAX_PENDING_REQUESTS)
+            .map(|index| {
+                broker
+                    .begin("first", &format!("request-{index}"), &url)
+                    .unwrap()
+            })
+            .collect();
+        assert_eq!(
+            broker.begin("first", "overflow", &url).err().unwrap().code,
+            "request_limit"
+        );
+        assert_eq!(
+            broker.begin("first", "request-0", &url).err().unwrap().code,
+            "duplicate_request"
+        );
+        pending.pop();
+        assert!(broker.begin("first", "overflow", &url).is_ok());
+    }
+
+    #[test]
+    fn early_cancellation_limits_are_bounded_and_consumed_entries_release_capacity() {
+        let broker = broker();
+        for index in 0..MAX_PRE_CANCELLED {
+            broker.cancel("first", &format!("early-{index}")).unwrap();
+        }
+        assert_eq!(
+            broker.cancel("first", "overflow").unwrap_err().code,
+            "request_limit"
+        );
+        broker.cancel("first", "early-0").unwrap();
+        assert_eq!(
+            broker
+                .begin(
+                    "first",
+                    "early-0",
+                    &https_url("https://pool.example.com").unwrap()
+                )
+                .err()
+                .unwrap()
+                .code,
+            "request_cancelled"
+        );
+        broker.cancel("first", "overflow").unwrap();
+        broker.remove("first").unwrap();
+        broker
+            .configure("first", vec!["https://pool.example.com".into()])
+            .unwrap();
+        assert!(broker
+            .begin(
+                "first",
+                "overflow",
+                &https_url("https://pool.example.com").unwrap()
+            )
+            .is_ok());
+    }
+
+    #[test]
+    fn application_exit_cancels_all_requests_and_removes_account_and_early_cancel_scopes() {
+        let broker = broker();
+        let url = https_url("https://pool.example.com").unwrap();
+        broker
+            .configure("second", vec![url.origin().ascii_serialization()])
+            .unwrap();
+        let first = broker.begin("first", "active", &url).unwrap();
+        let second = broker.begin("second", "active", &url).unwrap();
+        broker.cancel("first", "early").unwrap();
+        broker.cancel_all();
+        assert!(first.cancellation.is_cancelled());
+        assert!(second.cancellation.is_cancelled());
+        for account in ["first", "second"] {
+            assert_eq!(
+                broker.begin(account, "next", &url).err().unwrap().code,
+                "account_not_configured"
+            );
+        }
+        broker
+            .configure("first", vec![url.origin().ascii_serialization()])
+            .unwrap();
+        assert!(broker.begin("first", "early", &url).is_ok());
+    }
+
+    #[test]
+    fn utf8_and_base64_request_limits_accept_exactly_ten_mebibytes() {
+        let utf8 = "ö".repeat(MAX_REQUEST_BYTES / 2);
+        assert_eq!(
+            request_body(Some(utf8.clone()), BodyEncoding::Utf8)
+                .unwrap()
+                .unwrap()
+                .len(),
+            MAX_REQUEST_BYTES
+        );
+        assert_eq!(
+            request_body(Some(format!("{utf8}ö")), BodyEncoding::Utf8)
+                .unwrap_err()
+                .code,
+            "request_too_large"
+        );
+        let bytes = vec![0xff; MAX_REQUEST_BYTES];
+        assert_eq!(
+            request_body(Some(BASE64.encode(&bytes)), BodyEncoding::Base64)
+                .unwrap()
+                .unwrap(),
+            bytes
+        );
     }
 
     #[test]

@@ -5,6 +5,7 @@ import { embeddedCollection, inlineMessage, plainText, ucwaDate, ucwaDelivery, u
 import { safeError } from '../lib/native-transport';
 
 const string = (value: unknown, fallback = '') => typeof value === 'string' ? value : fallback;
+interface PendingMessage { id: string; conversationUrl: string }
 
 export class SkypeConnector implements AccountConnector {
   private client?: SkypeForHoo;
@@ -14,10 +15,11 @@ export class SkypeConnector implements AccountConnector {
   private polling?: Promise<void>;
   private pollFailure?: unknown;
   private readonly conversations = new Map<string, ResourceReference>();
+  private readonly closedConversations = new Set<string>();
   private readonly acceptedInvitations = new Set<string>();
-  private readonly pendingMessages = new Map<string, string>();
-  private readonly messageAliases = new Map<string, string>();
-  private readonly earlyOutgoing = new Map<string, Pick<Message, 'createdAt' | 'delivery'>>();
+  private readonly pendingMessages = new Map<string, PendingMessage>();
+  private readonly messageAliases = new Map<string, PendingMessage>();
+  private readonly earlyOutgoing = new Map<string, Pick<Message, 'createdAt' | 'delivery'> & { conversationUrl: string }>();
   private readonly pendingInvitations = new Set<string>();
   private readonly participantNames = new Map<string, string>();
   private removeAbort?: () => void;
@@ -92,12 +94,13 @@ export class SkypeConnector implements AccountConnector {
 
   private async emitConversation(reference: ResourceReference): Promise<Conversation> {
     this.conversations.set(reference.url, reference);
+    const closed = this.closedConversations.has(reference.url);
     const participantResources = embeddedCollection(reference, 'participant');
     const participants = participantResources.filter((value) => value.data.local !== true).map((value) => string(value.data.name, string(value.data.uri))).filter(Boolean);
     const count = typeof reference.data.participantCount === 'number' ? reference.data.participantCount : participants.length + 1;
     const title = string(reference.data.subject) || participants.join(', ') || 'Skype conversation';
-    let messaging = embeddedCollection(reference, 'messaging')[0];
-    if (!messaging && hasLink(reference.data, 'messaging')) messaging = await this.requireSession().follow(reference, 'messaging', this.lifetime.signal);
+    let messaging = closed ? undefined : embeddedCollection(reference, 'messaging')[0];
+    if (!closed && !messaging && hasLink(reference.data, 'messaging')) messaging = await this.requireSession().follow(reference, 'messaging', this.lifetime.signal);
     const conversation: Conversation = {
       id: scopedId(this.context!.accountId, reference.url), accountId: this.context!.accountId, provider: 'skype', nativeId: reference.url,
       title, initials: initials(title), color: avatarColor(reference.url), participants, preview: '', updatedAt: ucwaDate(reference.data.created),
@@ -124,7 +127,12 @@ export class SkypeConnector implements AccountConnector {
       if (!event.link?.href || !relation) continue;
       const url = new URL(event.link.href, session.application.url).href;
       if (event.type === 'deleted') {
-        if (relation === 'conversation') this.conversations.delete(url);
+        if (relation === 'conversation') {
+          this.closedConversations.add(url);
+          const previous = this.conversations.get(url);
+          if (previous) await this.emitConversation(previous);
+          this.context!.emit({ type: 'typing', conversationId: scopedId(this.context!.accountId, url), names: [] });
+        }
         continue;
       }
       if (!['conversation', 'message', 'messagingInvitation', 'typingParticipants', 'contact'].includes(relation)) continue;
@@ -132,7 +140,10 @@ export class SkypeConnector implements AccountConnector {
       const reference = typeof embedded === 'object' && embedded !== null && !Array.isArray(embedded)
         ? resourceReference(embedded as UcwaResource, url)
         : await session.read(url, this.lifetime.signal);
-      if (relation === 'conversation') await this.emitConversation(reference);
+      if (relation === 'conversation') {
+        this.closedConversations.delete(reference.url);
+        await this.emitConversation(reference);
+      }
       else if (relation === 'contact') this.emitContact(reference);
       else if (relation === 'message') {
         let conversationUrl = sender.rel === 'conversation' && sender.href ? new URL(sender.href, session.application.url).href : undefined;
@@ -151,7 +162,7 @@ export class SkypeConnector implements AccountConnector {
         const failed = reference.data.state === 'Failed' || event.status === 'Failed' || event.status === 'Failure';
         if (failed) {
           this.pendingInvitations.delete(operationId);
-          this.context!.emit({ type: 'error', message: 'The Skype conversation invitation failed.' });
+          this.context!.emit({ type: 'error', message: 'The Skype conversation invitation failed.', recoverable: true });
         }
         if (hasLink(reference.data, 'conversation')) {
           const conversation = await this.ensureConversation(getLink(reference.data, 'conversation', reference.url));
@@ -161,7 +172,9 @@ export class SkypeConnector implements AccountConnector {
           }
         }
       } else if (relation === 'typingParticipants' && sender.rel === 'conversation' && sender.href) {
-        const conversationId = scopedId(this.context!.accountId, new URL(sender.href, session.application.url).href);
+        const conversationUrl = new URL(sender.href, session.application.url).href;
+        if (this.closedConversations.has(conversationUrl)) continue;
+        const conversationId = scopedId(this.context!.accountId, conversationUrl);
         const names = (await this.collection(reference, 'participant')).map((value) => string(value.data.name, 'Someone'));
         this.context!.emit({ type: 'typing', conversationId, names });
       }
@@ -184,13 +197,15 @@ export class SkypeConnector implements AccountConnector {
   private async emitMessage(reference: ResourceReference, conversationUrl: string, eventStatus?: string): Promise<void> {
     const conversation = await this.ensureConversation(conversationUrl);
     const operationId = string(reference.data.operationId);
-    const pendingId = this.messageAliases.get(reference.url) ?? this.pendingMessages.get(operationId);
+    const alias = this.messageAliases.get(reference.url);
+    const operation = this.pendingMessages.get(operationId);
+    const pendingId = alias?.conversationUrl === conversationUrl ? alias.id : operation?.conversationUrl === conversationUrl ? operation.id : undefined;
     const outgoing = reference.data.direction === 'Outgoing';
     const status = eventStatus ?? reference.data.status;
     const delivery = outgoing ? ucwaDelivery(status === 'Success' ? 'Succeeded' : status === 'Failure' ? 'Failed' : status) : 'delivered';
     const createdAt = ucwaDate(reference.data.timeStamp);
     if (outgoing && !this.messageAliases.has(reference.url)) {
-      this.earlyOutgoing.set(reference.url, { createdAt, delivery });
+      this.earlyOutgoing.set(reference.url, { createdAt, delivery, conversationUrl });
       if (this.earlyOutgoing.size > 512) this.earlyOutgoing.delete(this.earlyOutgoing.keys().next().value!);
     }
     let senderName = outgoing ? 'You' : 'Skype contact';
@@ -220,17 +235,18 @@ export class SkypeConnector implements AccountConnector {
 
   async sendMessage(conversation: Conversation, body: string, operationId: string): Promise<void> {
     const reference = this.conversations.get(conversation.nativeId);
-    if (!reference || conversation.accountId !== this.context?.accountId) throw new Error('This conversation does not belong to the connected Skype account.');
+    if (!reference || this.closedConversations.has(conversation.nativeId) || conversation.accountId !== this.context?.accountId) throw new Error('This conversation does not belong to the connected Skype account.');
     const id = scopedId(this.context.accountId, operationId);
-    this.pendingMessages.set(operationId, id);
+    const pending = { id, conversationUrl: conversation.nativeId };
+    this.pendingMessages.set(operationId, pending);
     const result = await this.requireSession().sendMessage(reference, body, { operationId, signal: this.lifetime.signal });
     this.lifetime.signal.throwIfAborted();
     const location = result.response.headers.get('location');
     if (location) {
       const nativeUrl = new URL(location, result.url).href;
-      this.messageAliases.set(nativeUrl, id);
+      this.messageAliases.set(nativeUrl, pending);
       const early = this.earlyOutgoing.get(nativeUrl);
-      if (early) {
+      if (early?.conversationUrl === conversation.nativeId) {
         this.earlyOutgoing.delete(nativeUrl);
         this.context!.emit({ type: 'message', replacesMessageId: scopedId(this.context!.accountId, nativeUrl), message: {
           id, accountId: this.context!.accountId, conversationId: conversation.id, senderId: 'self', senderName: 'You',
@@ -252,7 +268,8 @@ export class SkypeConnector implements AccountConnector {
 
   async setTyping(conversation: Conversation): Promise<void> {
     const reference = this.conversations.get(conversation.nativeId);
-    if (reference) await this.requireSession().setTyping(reference, this.lifetime.signal);
+    if (!reference || this.closedConversations.has(conversation.nativeId) || conversation.accountId !== this.context?.accountId) throw new Error('This conversation does not belong to the connected Skype account.');
+    await this.requireSession().setTyping(reference, this.lifetime.signal);
   }
 
   async disconnect(): Promise<void> {
@@ -271,6 +288,7 @@ export class SkypeConnector implements AccountConnector {
       this.acceptedInvitations.clear();
       this.participantNames.clear();
       this.conversations.clear();
+      this.closedConversations.clear();
     }
   }
 }

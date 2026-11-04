@@ -33,7 +33,7 @@ export function Delivery({ status, error, demo }: { status: MessageDelivery; err
   if (demo) return <span className="message-delivery demo-delivery">Demo message</span>;
   const label = { pending: 'Sending', accepted: 'Accepted by server', delivered: 'Delivered', read: 'Read', failed: 'Failed to send' }[status];
   const Icon = status === 'pending' ? Clock3 : status === 'failed' ? TriangleAlert : status === 'accepted' ? Check : CheckCheck;
-  return <span className={cn('message-delivery', `delivery-${status}`)} title={error || label} aria-label={label}><Icon aria-hidden="true" />{status === 'failed' && 'Failed to send'}</span>;
+  return <span className={cn('message-delivery', `delivery-${status}`)} title={error || label} aria-label={label}><Icon aria-hidden="true" /><span>{label}</span></span>;
 }
 
 export function AttachmentTile({ attachment, compact = false }: { attachment: Attachment; compact?: boolean }) {
@@ -46,6 +46,16 @@ export function AttachmentTile({ attachment, compact = false }: { attachment: At
 export function timeLabel(value: string) {
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? '' : date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+export function inboxDateLabel(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  const today = new Date();
+  if (date.toDateString() === today.toDateString()) return timeLabel(value);
+  const yesterday = new Date(today); yesterday.setDate(today.getDate() - 1);
+  if (date.toDateString() === yesterday.toDateString()) return 'Yesterday';
+  return date.toLocaleDateString([], { month: 'short', day: 'numeric', ...(date.getFullYear() !== today.getFullYear() ? { year: 'numeric' } : {}) });
 }
 
 export function dayLabel(value: string) {

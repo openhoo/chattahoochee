@@ -1,0 +1,137 @@
+.dialog-refined.settings-dialog { max-width: 850px; }
+.dialog-refined.settings-dialog .settings-titlebar { padding-inline: 28px; }
+.dialog-refined.settings-dialog .settings-body { grid-template-columns: 176px minmax(0, 1fr); min-height: 0; }
+.dialog-refined .settings-nav > button { min-height: 42px; gap: 10px; font-size: 13px; }
+.dialog-refined .settings-nav-footer > span:last-child { font-size: 11px; line-height: 1.55; }
+.dialog-refined .settings-section { min-height: 0; overscroll-behavior: contain; }
+.dialog-refined .section-heading { align-items: flex-start; }
+.dialog-refined .section-heading h2 { font-size: 20px; line-height: 1.3; }
+.dialog-refined .section-heading p { max-width: 330px; font-size: 13px; line-height: 1.65; }
+.dialog-refined .subtle-button { height: 36px; font-size: 12px; gap: 7px; flex-shrink: 0; }
+.dialog-refined .settings-demo-note { padding: 14px; gap: 11px; }
+.dialog-refined .settings-demo-note strong { font-size: 13px; }
+.dialog-refined .settings-demo-note p { font-size: 12px; line-height: 1.65; }
+.dialog-refined .settings-demo-note button { display: inline-flex; align-items: center; gap: 7px; margin-top: 10px; font-size: 12px; font-weight: 550; text-decoration: underline; text-underline-offset: 3px; }
+.dialog-refined .settings-demo-note button svg { width: 13px; height: 13px; }
+.dialog-refined .settings-account { padding: 17px 15px; align-items: flex-start; gap: 13px; }
+.dialog-refined .account-card-info { gap: 6px; }
+.dialog-refined .account-card-info > strong { font-size: 14px; line-height: 1.4; }
+.dialog-refined .account-card-info > .account-card-address { font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; word-break: normal; }
+.dialog-refined .account-card-info > .account-provider-name { font-size: 11px; }
+.dialog-refined .account-card-info > .account-sync-summary { margin-top: 4px; font-size: 11px; line-height: 1.5; word-break: normal; }
+.dialog-refined .account-status { width: fit-content; padding: 4px 7px; border-radius: 5px; background: var(--subtle); font-size: 11px; line-height: 1.2; }
+.dialog-refined .account-error { font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.dialog-refined .accounts-empty { padding: 38px 14px; }
+.dialog-refined .accounts-empty h3 { font-size: 20px; line-height: 1.4; }
+.dialog-refined .accounts-empty p { max-width: 310px; font-size: 13px; }
+.dialog-refined .accounts-empty > button { height: 39px; font-size: 13px; }
+.dialog-refined .demo-switch { margin-top: 26px; padding-top: 22px; }
+.dialog-refined .demo-switch > div { font-size: 12px; line-height: 1.5; }
+.dialog-refined .demo-switch > button { margin-left: 20px; font-size: 13px; }
+.dialog-refined .settings-section.is-adding { display: flex; flex-direction: column; padding: 0; overflow: hidden; }
+.dialog-refined .connect-form { display: flex; flex: 1; flex-direction: column; margin: 0; padding: 0; border: 0; min-height: 0; }
+.dialog-refined .connect-form-fields { flex: 1; min-height: 0; min-width: 0; overflow-y: auto; overscroll-behavior: contain; border: 0; margin: 0; padding: 24px 28px 16px; }
+.dialog-refined .form-section-title { align-items: flex-start; gap: 10px; margin-bottom: 20px; }
+.dialog-refined .form-section-title h2 { font-size: 20px; font-weight: 580; letter-spacing: -.4px; line-height: 1.3; margin: 0; }
+.dialog-refined .form-section-title p { margin-top: 6px; color: var(--muted-foreground); font-size: 12px; line-height: 1.6; }
+.dialog-refined .form-section-title > .icon-button { margin: -5px -7px 0 0; flex-shrink: 0; }
+.dialog-refined .provider-chooser { gap: 10px; margin-bottom: 12px; }
+.dialog-refined .provider-chooser > button { min-height: 44px; padding: 11px 12px; gap: 9px; font-size: 12px; }
+.dialog-refined .provider-setup-description { margin: 0 0 20px; color: var(--muted-foreground); font-size: 12px; line-height: 1.65; }
+.dialog-refined .browser-preview-note { display: flex; gap: 10px; padding: 12px; margin-bottom: 18px; border: 1px solid var(--border); border-radius: 9px; background: var(--subtle); color: var(--muted-foreground); }
+.dialog-refined .browser-preview-note > svg { width: 17px; height: 17px; flex-shrink: 0; margin-top: 2px; }
+.dialog-refined .browser-preview-note p { font-size: 12px; line-height: 1.65; }
+.dialog-refined .browser-preview-note strong { color: var(--foreground); font-weight: 550; }
+.dialog-refined .form-field { gap: 7px; margin-bottom: 19px; min-width: 0; }
+.dialog-refined .form-field > label { display: flex; align-items: baseline; gap: 9px; font-size: 13px; font-weight: 550; line-height: 1.5; }
+.dialog-refined .form-field input, .dialog-refined .form-field select { height: 42px; font-size: 13px; padding-inline: 12px; }
+.dialog-refined .form-field input::placeholder { opacity: .8; }
+.dialog-refined .form-field input[aria-invalid=true] { border-color: #b85e6d; }
+.dialog-refined .form-field small { font-size: 11px; line-height: 1.65; }
+.dialog-refined .form-field .field-validation { color: #b34e60; }
+.dark .dialog-refined .form-field .field-validation { color: #e5a6b3; }
+.dialog-refined .field-optional { font-size: 11px; line-height: 1.4; font-weight: 400; }
+.dialog-refined .password-input input { padding-right: 45px; }
+.dialog-refined .password-input > button { top: 6px; right: 6px; }
+.dialog-refined .advanced-settings { padding: 2px 0 0; }
+.dialog-refined .advanced-settings summary { width: fit-content; padding: 5px 0 12px; font-size: 12px; line-height: 1.5; }
+.dialog-refined .connect-form-footer { flex-shrink: 0; padding: 14px 28px 20px; border-top: 1px solid var(--border); background: var(--card); }
+.dialog-refined .credential-note { margin: 0 0 12px; gap: 7px; font-size: 11px; line-height: 1.6; }
+.dialog-refined .credential-note svg { width: 14px; height: 14px; }
+.dialog-refined .form-actions { margin-top: 0; gap: 9px; }
+.dialog-refined .form-actions > button { min-height: 39px; font-size: 13px; padding-inline: 15px; }
+.dialog-refined .form-error { font-size: 12px; line-height: 1.6; max-height: 116px; overflow-y: auto; }
+.dialog-refined .connection-progress { display: flex; align-items: flex-start; gap: 8px; margin: 0 0 12px; color: var(--muted-foreground); font-size: 12px; line-height: 1.6; }
+.dialog-refined .connection-progress > svg { width: 15px; height: 15px; flex-shrink: 0; margin-top: 2px; }
+.dialog-refined .theme-options { gap: 12px; margin-top: 30px; }
+.dialog-refined .theme-choice { padding: 10px; gap: 14px; }
+.dialog-refined .theme-preview { height: 92px; }
+.dialog-refined .theme-name { font-size: 13px; gap: 7px; }
+.dialog-refined .theme-name svg { width: 14px; height: 14px; }
+.dialog-refined .appearance-current { margin-top: 20px; color: var(--foreground); font-size: 13px; line-height: 1.6; }
+.dialog-refined .appearance-note { padding-top: 12px; font-size: 12px; }
+.dialog-refined.new-chat-dialog { width: calc(100% - 40px); max-width: 510px; max-height: min(760px, calc(100dvh - 48px)); padding: 26px; gap: 16px; overflow: hidden; }
+.dialog-refined .new-chat-heading { gap: 12px; flex-shrink: 0; }
+.dialog-refined .new-chat-heading .eyebrow { font-size: 10px; letter-spacing: 1.2px; }
+.dialog-refined.new-chat-dialog > [data-slot=dialog-description] { font-size: 13px; line-height: 1.65; flex-shrink: 0; }
+.dialog-refined .new-chat-form { flex-shrink: 0; }
+.dialog-refined .new-chat-form .form-field { margin-bottom: 9px; }
+.dialog-refined .new-chat-account-scope { display: flex; align-items: flex-start; gap: 8px; margin-bottom: 17px; color: var(--muted-foreground); }
+.dialog-refined .new-chat-account-scope > .provider-icon { width: 17px; height: 17px; flex-shrink: 0; margin-top: 1px; font-size: 12px; }
+.dialog-refined .new-chat-account-scope .provider-icon svg { width: 13px; height: 13px; }
+.dialog-refined .new-chat-account-scope p { min-width: 0; font-size: 11px; line-height: 1.65; overflow-wrap: anywhere; }
+.dialog-refined .new-chat-account-scope strong { font-weight: 500; color: var(--foreground); }
+.dialog-refined .new-chat-search { gap: 9px; padding: 7px 11px; min-height: 43px; }
+.dialog-refined .new-chat-search > svg { flex-shrink: 0; width: 16px; height: 16px; }
+.dialog-refined .new-chat-search input { font-size: 13px; line-height: 1.6; }
+.dialog-refined .new-chat-search > .icon-button { width: 27px; height: 27px; margin-right: -4px; }
+.dialog-refined .new-chat-search-help { margin-top: 9px; color: var(--muted-foreground); font-size: 11px; line-height: 1.6; }
+.dialog-refined .start-address-button { margin-top: 12px; padding: 9px 12px; font-size: 12px; min-height: 38px; }
+.dialog-refined .new-chat-contacts { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; margin-inline: -7px; padding-inline: 7px; }
+.dialog-refined .contact-results-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 5px 1px 10px; }
+.dialog-refined .contact-results-heading .eyebrow { font-size: 10px; letter-spacing: 1px; }
+.dialog-refined .contact-result-count { color: var(--muted-foreground); font-size: 11px; white-space: nowrap; }
+.dialog-refined .contact-picker-item { min-height: 61px; gap: 12px; padding: 10px 8px; }
+.dialog-refined .contact-picker-item .person-avatar { width: 37px; height: 37px; min-width: 37px; font-size: 11px; }
+.dialog-refined .contact-picker-item strong { font-size: 13px; line-height: 1.4; }
+.dialog-refined .contact-picker-item small { font-size: 11px; line-height: 1.5; }
+.dialog-refined .contact-picker-item > svg { width: 15px; height: 15px; }
+.dialog-refined .contact-picker-item:focus-visible { outline: 2px solid var(--primary); outline-offset: -2px; background: var(--subtle); }
+.dialog-refined .contact-search-empty { text-align: center; padding: 20px 15px 24px; }
+.dialog-refined .contact-search-empty > svg { width: 23px; height: 23px; margin: 0 auto 12px; color: var(--muted-foreground); stroke-width: 1.5; }
+.dialog-refined .contact-search-empty h3 { font-size: 14px; line-height: 1.5; font-weight: 550; }
+.dialog-refined .contact-search-empty p { margin: 7px auto 0; max-width: 315px; color: var(--muted-foreground); font-size: 12px; line-height: 1.65; }
+.dialog-refined .contact-search-empty > button { margin-top: 13px; color: var(--primary); font-size: 12px; text-decoration: underline; text-underline-offset: 3px; }
+.dialog-refined .new-chat-keyboard-hint { display: flex; align-items: center; gap: 6px; padding-top: 13px; border-top: 1px solid var(--border); color: var(--muted-foreground); font-size: 10px; flex-shrink: 0; }
+.dialog-refined .new-chat-keyboard-hint kbd { padding: 1px 4px; border: 1px solid var(--border); border-radius: 4px; background: var(--subtle); font-family: inherit; }
+.dialog-refined .new-chat-keyboard-hint > span { margin-inline: 3px; }
+.dialog-refined .new-chat-empty { min-height: 0; overflow-y: auto; }
+.dialog-refined .new-chat-empty h3 { font-size: 18px; line-height: 1.4; }
+.dialog-refined .new-chat-empty p { font-size: 13px; }
+.dialog-refined .new-chat-empty > button { height: 39px; font-size: 13px; }
+.dialog-refined :is(button, summary):focus-visible { outline: 2px solid var(--primary); outline-offset: 3px; }
+
+@media (max-height: 760px) {
+  .dialog-refined.settings-dialog .settings-body { height: calc(100dvh - 130px); }
+  .dialog-refined.settings-dialog .settings-titlebar { height: 76px; }
+  .dialog-refined .connect-form-fields { padding-top: 20px; }
+  .dialog-refined .connect-form-footer { padding-block: 12px 14px; }
+  .dialog-refined.new-chat-dialog { gap: 12px; padding: 22px; }
+  .dialog-refined .new-chat-account-scope { margin-bottom: 12px; }
+}
+
+@media (max-width: 760px) {
+  .dialog-refined.settings-dialog { width: calc(100% - 24px); }
+  .dialog-refined.settings-dialog .settings-body { display: flex; min-height: 0; }
+  .dialog-refined .settings-nav { flex-shrink: 0; }
+  .dialog-refined .settings-nav > button { font-size: 12px; min-height: 38px; }
+  .dialog-refined .settings-section { flex: 1; padding: 22px 19px; }
+  .dialog-refined .settings-section.is-adding { padding: 0; }
+  .dialog-refined .connect-form-fields { padding: 20px 19px 14px; }
+  .dialog-refined .connect-form-footer { padding-inline: 19px; }
+  .dialog-refined .provider-chooser > button { padding: 10px; font-size: 11px; gap: 7px; }
+  .dialog-refined .section-heading { flex-wrap: wrap; gap: 14px; }
+  .dialog-refined .theme-options { gap: 9px; }
+  .dialog-refined .theme-choice { padding: 7px; }
+  .dialog-refined .theme-name { padding-inline: 0; font-size: 12px; }
+}

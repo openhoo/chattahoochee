@@ -25,7 +25,7 @@ The screenshots show the built app's explicit demo workspace with synthetic cont
 - Teamwire: human email/password sessions, encrypted contacts/subscriptions/history, encrypted text sending, HTTP feed polling and read markers through the local `@openhoo/teamwire-sdk` workspace.
 - Native HTTP transport with per-account HTTPS origins, system TLS trust, cancellation, duplicate authentication headers and bounded response sizes.
 
-**Qualification:** automated protocol tests use synthetic servers. Real enterprise authentication and interoperability need a live account test. No live credentials or real messages were used to develop or verify this preview. Windows is a target in the build workflow; its runtime has not been verified locally.
+**Qualification:** automated protocol tests use synthetic servers. Real enterprise authentication and interoperability need a live account test. No live credentials or real messages were used to develop or verify this preview. macOS and Windows CI builds have succeeded; Windows interactive runtime behavior remains unverified.
 
 ### Features still being implemented
 
@@ -73,11 +73,18 @@ The app does not log request bodies or credentials. It does not retry message wr
 
 ```sh
 npm run check
+npm run test:coverage
+npm exec playwright install -- --with-deps chromium firefox webkit
+npm run test:e2e
 cd src-tauri
 cargo fmt --all -- --check
 cargo test --locked
 cd ..
 ```
+
+The permanent suite contains **188 TypeScript tests**, **21 Rust tests**, and **53 UI scenarios across five browser/layout configurations (265 E2E checks)**. The browser matrix covers Chromium, Firefox, WebKit, and the 980×640 minimum window in Chromium and WebKit. Each test starts in a fresh browser context. The shared E2E fixture rejects external HTTP requests and checks for browser errors. No retries mask failures.
+
+Coverage is measured for the store/model, connectors, TypeScript native bridge and Teamwire SDK. `test:coverage` enforces at least **95% lines, 85% branches and 90% functions** for that combined scope; React views and Rust are tested separately. LCOV and a machine-readable summary are saved under `artifacts/coverage/`. CI uploads browser reports, JUnit results, and failure screenshots, traces and videos.
 
 Create a macOS app bundle for local review:
 
@@ -91,7 +98,7 @@ Create a Windows NSIS installer on Windows:
 npm run desktop:build -- --bundles nsis --no-sign --ci
 ```
 
-Builds without signing are local previews. Public distribution needs the platform's signing and release process. The prepared GitHub Actions workflow builds macOS and Windows artifacts; adding a workflow file is not evidence that its Windows job has run.
+Builds without signing are local previews. Public distribution needs the platform's signing and release process. The GitHub Actions desktop workflow tests and builds macOS app archives and Windows NSIS installer artifacts.
 
 ## Project structure
 
@@ -105,7 +112,7 @@ Builds without signing are local previews. Public distribution needs the platfor
 | `src-tauri` | Native HTTP broker, cancellation, window/CSP/command scopes |
 | `tests` | Store, native bridge and connector protocol tests |
 
-See [architecture](docs/architecture.md), [verification](docs/verification.md), [native transport](src-tauri/README.md), [Teamwire SDK](packages/teamwire-sdk/README.md) and [third-party notices](THIRD_PARTY_NOTICES.md).
+See [architecture](docs/architecture.md), [verification](docs/verification.md), [dependency audit](docs/dependency-audit.md), [native transport](src-tauri/README.md), [Teamwire SDK](packages/teamwire-sdk/README.md) and [third-party notices](THIRD_PARTY_NOTICES.md).
 
 ## License
 

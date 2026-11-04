@@ -247,6 +247,42 @@ test('message text and the composer remain readable at the configured viewport',
     const fontSize = await element.evaluate(node => Number.parseFloat(getComputedStyle(node).fontSize));
     expect(fontSize, `${description} must remain at least 14px at ${page.viewportSize()?.width}px`).toBeGreaterThanOrEqual(14);
   }
+  const badge = page.locator('.rail-navigation .rail-unread');
+  await expect(badge).toBeVisible();
+  const bounds = await badge.evaluate(node => {
+    const rect = ({ top, right, bottom, left }: DOMRect) => ({ top, right, bottom, left });
+    const badgeRect = node.getBoundingClientRect();
+    const style = getComputedStyle(node);
+    const text = document.createRange();
+    text.selectNodeContents(node);
+    const button = node.parentElement!;
+    return {
+      text: rect(text.getBoundingClientRect()),
+      badgeContent: {
+        top: badgeRect.top + Number.parseFloat(style.borderTopWidth),
+        right: badgeRect.right - Number.parseFloat(style.borderRightWidth),
+        bottom: badgeRect.bottom - Number.parseFloat(style.borderBottomWidth),
+        left: badgeRect.left + Number.parseFloat(style.borderLeftWidth),
+      },
+      badge: rect(badgeRect),
+      rail: rect(node.closest('.app-rail')!.getBoundingClientRect()),
+      icon: rect(button.querySelector('svg')!.getBoundingClientRect()),
+      label: rect(button.querySelector('.rail-label')!.getBoundingClientRect()),
+      button: rect(button.getBoundingClientRect()),
+    };
+  });
+  for (const [description, inner, outer] of [
+    ['unread number inside its pill', bounds.text, bounds.badgeContent],
+    ['unread badge inside the rail', bounds.badge, bounds.rail],
+    ['Inbox icon inside its button', bounds.icon, bounds.button],
+    ['Inbox label inside its button', bounds.label, bounds.button],
+  ] as const) {
+    expect(inner.top, `${description}: top`).toBeGreaterThanOrEqual(outer.top);
+    expect(inner.right, `${description}: right`).toBeLessThanOrEqual(outer.right);
+    expect(inner.bottom, `${description}: bottom`).toBeLessThanOrEqual(outer.bottom);
+    expect(inner.left, `${description}: left`).toBeGreaterThanOrEqual(outer.left);
+  }
+  expect(bounds.badge.bottom, 'The unread badge must not cover the Inbox icon').toBeLessThanOrEqual(bounds.icon.top);
 });
 
 test('search shortcut reveals the inbox when a narrow conversation is open', async ({ page }) => {

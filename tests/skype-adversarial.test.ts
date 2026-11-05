@@ -278,6 +278,27 @@ test('unsupported authentication challenges fail without disclosing or attemptin
   assert.equal(app.server.removed, 1);
 });
 
+test('a quoted Bearer realm cannot trigger a password grant through the native bridge', async t => {
+  const challenge = `Bearer realm="MsRtcOAuth href=${issuer}/tokens/password,grant_type=password, ignored=value"`;
+  const app = fixture(new SyntheticSkypeServer({ challenge }));
+  t.after(() => app.store.close());
+  await assert.rejects(app.connect(), (error: unknown) => {
+    assert.ok(error instanceof Error);
+    assert.equal(error.message, app.store.getSnapshot().accounts[0]?.error);
+    return true;
+  });
+  assert.equal(app.server.calls.some(call => call.url.startsWith(issuer)), false);
+  assert.equal(app.server.calls.some(call => call.body?.includes(password)), false);
+  assert.equal(app.server.calls.some(call => call.url === `${pool}/registrations/collection`), false);
+  const snapshot = app.store.getSnapshot();
+  assert.equal(snapshot.accounts[0]?.status, 'error');
+  assert.equal(snapshot.notice?.kind, 'error');
+  const serialized = JSON.stringify(snapshot);
+  for (const secret of [challenge, 'MsRtcOAuth', issuer, login, password, token]) assert.equal(serialized.includes(secret), false);
+  assert.equal(app.server.activeRequests.size, 0);
+  assert.equal(app.server.removed, 1);
+});
+
 test('token issuer error bodies remain absent from account state and notices', async t => {
   const app = fixture(new SyntheticSkypeServer({ intercept: call => call.url === `${issuer}/tokens/password`
     ? Response.json({ error_description: `Synthetic rejected ${login} ${password} ${token}` }, { status: 401 }) : undefined }));

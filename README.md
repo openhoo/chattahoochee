@@ -25,7 +25,7 @@ The screenshots show the built app's explicit demo workspace with synthetic cont
 - Unified inbox, provider filters, unread filter, search, contacts and pinned conversations.
 - Message timeline, per-conversation drafts, emoji insertion, keyboard shortcuts and light/dark/system appearance.
 - Separate live and synthetic demo workspaces. The demo never calls either service.
-- Skype for Business: discovery, separate SIP and advanced login username, UCWA contacts, messaging sessions, incoming messages, text sending, typing and protocol delivery events through `skypeforhoo` 0.2.0.
+- Skype for Business: discovery, separate SIP and advanced login username, UCWA contacts, messaging sessions, incoming messages, text sending, typing and protocol delivery events through `skypeforhoo` 0.2.1.
 - Teamwire: human email/password sessions, encrypted contacts/subscriptions/history, encrypted text sending, HTTP feed polling and read markers through the local `@openhoo/teamwire-sdk` workspace.
 - Native HTTP transport with per-account HTTPS origins, system TLS trust, cancellation, duplicate authentication headers and bounded response sizes.
 
@@ -86,7 +86,7 @@ cargo test --locked
 cd ..
 ```
 
-The permanent suite contains **188 TypeScript tests**, **21 Rust tests**, and **77 UI scenarios across five browser/layout configurations (385 E2E checks)**. The browser matrix covers Chromium, Firefox, WebKit, and the 980×640 minimum window in Chromium and WebKit. Focus and navigation regressions also exercise the 700px layout. Each test starts in a fresh browser context. The shared E2E fixture rejects external HTTP requests and checks for browser errors. No retries mask failures.
+The permanent suite contains **189 TypeScript tests**, **21 Rust tests**, and **77 UI scenarios across five browser/layout configurations (385 E2E checks)**. The browser matrix covers Chromium, Firefox, WebKit, and the 980×640 minimum window in Chromium and WebKit. Focus and navigation regressions also exercise the 700px layout. Each test starts in a fresh browser context. The shared E2E fixture rejects external HTTP requests and checks for browser errors. No retries mask failures.
 
 Coverage is measured for the store/model, connectors, TypeScript native bridge and Teamwire SDK. `test:coverage` enforces at least **95% lines, 85% branches and 90% functions** for that combined scope; React views and Rust are tested separately. LCOV and a machine-readable summary are saved under `artifacts/coverage/`. CI uploads browser reports, JUnit results, and failure screenshots, traces and videos.
 

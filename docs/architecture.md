@@ -7,7 +7,7 @@ flowchart TB
   UI[React + shadcn chat workspace] --> Store[Immutable account-scoped store]
   Store --> Skype[Skype connector]
   Store --> Teamwire[Teamwire connector]
-  Skype --> SfH[skypeforhoo 0.2.0]
+  Skype --> SfH[skypeforhoo 0.2.1]
   Teamwire --> TwSDK[Teamwire human-account SDK]
   SfH --> Fetch[Account Fetch bridge]
   TwSDK --> Fetch

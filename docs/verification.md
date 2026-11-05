@@ -2,9 +2,31 @@
 
 Verified on November 5, 2026 for the Chattahoochee 0.1.0 local preview.
 
-## Automated checks
+## Skypeforhoo 0.2.1 upgrade
 
-The completed hosted matrix covers implementation `9ce57c4864bce9201b68867c47e0d8b824505c38`, including the UI review, drawer and unread-badge repairs, and the requested bubble-padding reduction. Native smoke evidence and the local ZIP digest are tied to the same implementation below.
+The current SDK integration is published in commit [`917729f933804448f9942ce95e9e91b075d5ba7e`](https://github.com/openhoo/chattahoochee/commit/917729f933804448f9942ce95e9e91b075d5ba7e). The application and npm lockfile pin the official [Skypeforhoo v0.2.1 release](https://github.com/openhoo/skypeforhoo/releases/tag/v0.2.1), published on November 4, 2026. The downloaded package matches the release checksum, and its SHA-512 matches the npm lockfile integrity field.
+
+Package SHA-256: `3703f1f897fa037b3eee5c52143c7593bf115890e6c298269845dd30bbd9eb51`.
+
+The upgrade includes authentication challenge parsing and session lifecycle fixes. A new application integration regression passes a quoted Bearer realm containing misleading `MsRtcOAuth` text through the real store, connector, SDK and native Fetch bridge fixture. It verifies that no password request or application registration occurs, errors remain sanitized, native requests finish, and the account scope is removed exactly once.
+
+| Check | Result | Scope and evidence |
+| --- | --- | --- |
+| Local TypeScript check, tests and production build | Passed | 189 tests, zero failures, skips or cancellations; `artifacts/skypeforhoo-v0.2.1/app-check-final.log` |
+| Core coverage, local and hosted | Passed | 97.14% lines, 88.13% branches and 94.02% functions; matching Node 26 local and Node 24 hosted results; the existing 95% / 85% / 90% gates remain enforced |
+| Browser E2E | Passed | [Run 41976778599](https://github.com/openhoo/chattahoochee/actions/runs/41976778599): 385 passed, zero failures, skips or errors; 77 passes in each of the five browser/layout projects |
+| Desktop builds | Passed | [Run 41976778547](https://github.com/openhoo/chattahoochee/actions/runs/41976778547): 189 TypeScript tests and 21 Rust tests on each OS, zero failures or skips; macOS app and Windows NSIS preview installer |
+| CodeQL | Completed successfully | [Run 41976777494](https://github.com/openhoo/chattahoochee/actions/runs/41976777494): JavaScript/TypeScript, Rust, Actions and Python analysis jobs |
+| Local macOS bundle and native smoke | Passed | Rebuilt unsigned Apple Silicon app, packaged frontend, both account setup forms, cancellation focus and local Enter-to-send with updated inbox preview |
+| Local production browser preview | Passed | New production bundle loaded the synthetic workspace without console errors or warnings |
+
+The desktop workflow uploaded `Chattahoochee-macOS-preview` and `Chattahoochee-Windows-preview`; both contain unsigned preview builds. The current local package and smoke evidence are retained under `artifacts/skypeforhoo-v0.2.1/`: `Chattahoochee.app`, `Chattahoochee-0.1.0-macos-arm64.zip`, `desktop-build.log`, `native-smoke.png` and `app-update-verification.json`. The ZIP SHA-256 is `8c65cc2a0c959f27825f79ab7e49cf4567fd8d5a6ad0c28676df4fdff51be3b9`. Hosted logs, JUnit, coverage and run/artifact metadata are collected separately under `artifacts/ci-evidence/917729f/`.
+
+The smoke checks use local synthetic data. Live enterprise authentication, actual provider delivery, native audio/video/screen transmission and interactive Windows runtime remain unverified.
+
+## Previous UI verification
+
+The previous hosted matrix covers implementation `9ce57c4864bce9201b68867c47e0d8b824505c38`, including the UI review, drawer and unread-badge repairs, and the requested bubble-padding reduction. The counts, native smoke evidence and local ZIP digest in this historical section are tied to that implementation with Skypeforhoo 0.2.0.
 
 | Check | Result | Scope |
 | --- | --- | --- |
@@ -128,12 +150,12 @@ Local screenshots and the unsigned app/ZIP are retained in the ignored `artifact
 
 These checks were repeated on the rebuilt app after the expanded regressions and fixes, following the macOS unlock. Setup used disposable synthetic strings without submitting a login. The updated production browser UI was separately exercised for sending a local demo message and clearing a draft across demo exit/reopen.
 
-The earlier UI implementation at `e4933d3e161698a57c4d530b13ce9fd988499886` was rebuilt and launched again through its packaged frontend. Focused native smoke checks passed for the scrolling Skype/Teamwire forms and fixed action footer, cancellation focus, Enter-to-send, the active Teamwire account default in New conversation, contact-to-composer focus and emoji Escape dismissal. That earlier smoke record is retained as `artifacts/ui-ux-native-verification-e4933d3.json` and `artifacts/ui-ux-native-smoke.png`; its recorded `Chattahoochee-0.1.0-macos-arm64.zip` SHA-256 was `f0e27122f3b89c71df6470399c87d5717919584853c683ba93cfbda249cc1610`. The padding-adjusted implementation at `9ce57c4864bce9201b68867c47e0d8b824505c38` was then rebuilt and launched through its packaged frontend. Focused checks passed for Skype/Teamwire setup, cancellation focus, the visible Inbox unread badge, Enter-to-send with an updated inbox preview, the current Teamwire account default in New conversation, contact-to-composer focus and emoji Escape dismissal. The current smoke record is `artifacts/ui-ux-native-verification.json`, with screenshot `artifacts/ui-ux-native-padding-smoke.png`; the rebuilt ZIP digest is recorded above.
+The earlier UI implementation at `e4933d3e161698a57c4d530b13ce9fd988499886` was rebuilt and launched again through its packaged frontend. Focused native smoke checks passed for the scrolling Skype/Teamwire forms and fixed action footer, cancellation focus, Enter-to-send, the active Teamwire account default in New conversation, contact-to-composer focus and emoji Escape dismissal. That earlier smoke record is retained as `artifacts/ui-ux-native-verification-e4933d3.json` and `artifacts/ui-ux-native-smoke.png`; its recorded `Chattahoochee-0.1.0-macos-arm64.zip` SHA-256 was `f0e27122f3b89c71df6470399c87d5717919584853c683ba93cfbda249cc1610`. The padding-adjusted implementation at `9ce57c4864bce9201b68867c47e0d8b824505c38` was then rebuilt and launched through its packaged frontend. Focused checks passed for Skype/Teamwire setup, cancellation focus, the visible Inbox unread badge, Enter-to-send with an updated inbox preview, the current Teamwire account default in New conversation, contact-to-composer focus and emoji Escape dismissal. Its UI smoke record remains `artifacts/ui-ux-native-verification.json`, with screenshot `artifacts/ui-ux-native-padding-smoke.png`; its ZIP digest is recorded in the previous UI verification section.
 
 ## Remaining qualification
 
 - No live enterprise authentication, real messages or provider interoperability were tested.
-- The macOS and Windows CI desktop jobs completed successfully for `5783fa7aaec74498d9a7cc56e51acec65efd6069`. Follow-up evidence is recorded separately above; Windows interactive runtime remains unverified.
+- The macOS and Windows CI desktop jobs completed successfully for the SDK upgrade at `917729f933804448f9942ce95e9e91b075d5ba7e`. Windows interactive runtime remains unverified.
 - Compatible audio, video, screen sharing and attachment-transfer backends remain unimplemented.
 - The macOS preview is unsigned and has not gone through public distribution signing or notarization.
 - Account state, credentials, messages and drafts are in memory; reopening the application requires reconnecting.
